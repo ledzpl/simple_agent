@@ -110,9 +110,6 @@ func (a *App) authorizeCallback(query TelegramCallbackQuery) error {
 }
 
 func (a *App) isChatAllowed(chatID int64) bool {
-	if a.cfg.AllowAllChats {
-		return true
-	}
 	_, ok := a.cfg.AllowedChatIDs[chatID]
 	return ok
 }
@@ -140,7 +137,7 @@ func (a *App) isChatTypeAllowed(chat TelegramChat) bool {
 }
 
 func (a *App) needsDangerConfirmation(text string) bool {
-	return a.cfg.ConfirmDangerous && containsDangerousAction(text)
+	return containsDangerousAction(text)
 }
 
 var dangerousActionPatterns = []*regexp.Regexp{

@@ -98,3 +98,43 @@ func TestJobManagerDoesNotStartQueuedJobAfterParentContextCanceled(t *testing.T)
 		t.Fatalf("status should include canceled queued job: %#v", status)
 	}
 }
+
+func TestJobManagerLoadsPersistedHistory(t *testing.T) {
+	manager := NewJobManager(1, func(ctx context.Context, job *AgentJob) {})
+	now := time.Now().UTC()
+	manager.LoadHistory([]JobSnapshot{{
+		ID:        "old",
+		ChatID:    123,
+		Message:   "persisted",
+		State:     JobSucceeded,
+		AgentName: "engineer",
+		CreatedAt: now,
+	}})
+
+	status := manager.Status(123)
+	if len(status) != 1 {
+		t.Fatalf("expected one status entry, got %#v", status)
+	}
+	if status[0].ID != "old" || status[0].State != JobSucceeded || status[0].AgentName != "engineer" {
+		t.Fatalf("unexpected restored status: %#v", status[0])
+	}
+}
+
+func TestJobManagerHistorySinkReceivesFinishedJobs(t *testing.T) {
+	var persisted []JobSnapshot
+	manager := NewJobManager(1, func(ctx context.Context, job *AgentJob) {})
+	manager.SetHistorySink(func(jobs []JobSnapshot) {
+		persisted = jobs
+	})
+
+	job := &AgentJob{ID: "done", ChatID: 123, Message: "finish me"}
+	manager.Enqueue(context.Background(), job)
+	manager.Finish(job, JobSucceeded, "default", "")
+
+	if len(persisted) != 1 {
+		t.Fatalf("expected one persisted job, got %#v", persisted)
+	}
+	if persisted[0].ID != "done" || persisted[0].State != JobSucceeded {
+		t.Fatalf("unexpected persisted job: %#v", persisted[0])
+	}
+}

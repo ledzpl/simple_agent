@@ -12,6 +12,7 @@ RUN adduser -D -H -u 10001 app
 WORKDIR /app
 COPY --from=build /out/telegram-local-agent /usr/local/bin/telegram-local-agent
 COPY agents.example.json /app/agents.example.json
+RUN mkdir -p /app/.telegram-memory /app/.telegram-state && chown -R app:app /app
 USER app
 
 ENTRYPOINT ["telegram-local-agent"]

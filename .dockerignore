@@ -1,6 +1,7 @@
 .git/
 .github/
 .telegram-memory/
+.telegram-state/
 tmp/
 
 .env

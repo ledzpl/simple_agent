@@ -197,7 +197,6 @@ func TestLoadAgentDefinitionsFromFile(t *testing.T) {
 		AgentTimeout:      time.Second,
 		AgentSystemPrompt: "system",
 		AgentsFile:        path,
-		DefaultAgentName:  "default",
 		CodexBin:          "codex",
 		CodexWorkDir:      dir,
 		CodexSandbox:      "read-only",

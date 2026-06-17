@@ -55,8 +55,8 @@ func NewMemoryStore(cfg Config) (*MemoryStore, error) {
 	}
 	return &MemoryStore{
 		dir:         cfg.MemoryDir,
-		maxMessages: cfg.MemoryMaxMessages,
-		maxChars:    cfg.MemoryMaxChars,
+		maxMessages: memoryMaxMessages,
+		maxChars:    memoryMaxChars,
 	}, nil
 }
 

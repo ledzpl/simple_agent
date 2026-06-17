@@ -59,7 +59,6 @@ func (a CodexAgent) Ask(ctx context.Context, prompt string) (string, error) {
 	if a.cfg.CodexModel != "" {
 		args = append(args, "-m", a.cfg.CodexModel)
 	}
-	args = append(args, a.cfg.CodexExtraArgs...)
 	args = append(args, "-")
 
 	cmd := exec.CommandContext(ctx, a.cfg.CodexBin, args...)
@@ -122,10 +121,9 @@ type OllamaAgent struct {
 }
 
 type ollamaChatRequest struct {
-	Model     string          `json:"model"`
-	Messages  []ollamaMessage `json:"messages"`
-	Stream    bool            `json:"stream"`
-	KeepAlive string          `json:"keep_alive,omitempty"`
+	Model    string          `json:"model"`
+	Messages []ollamaMessage `json:"messages"`
+	Stream   bool            `json:"stream"`
 }
 
 type ollamaMessage struct {
@@ -149,8 +147,7 @@ func (a OllamaAgent) Ask(ctx context.Context, prompt string) (string, error) {
 			{Role: "system", Content: strings.TrimSpace(a.cfg.AgentSystemPrompt)},
 			{Role: "user", Content: strings.TrimSpace(prompt)},
 		},
-		Stream:    false,
-		KeepAlive: a.cfg.OllamaKeepAlive,
+		Stream: false,
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {

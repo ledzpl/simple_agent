@@ -9,10 +9,8 @@ import (
 
 func TestMemoryStoreAppendBuildContextAndClear(t *testing.T) {
 	store, err := NewMemoryStore(Config{
-		MemoryEnabled:     true,
-		MemoryDir:         t.TempDir(),
-		MemoryMaxMessages: 10,
-		MemoryMaxChars:    1000,
+		MemoryEnabled: true,
+		MemoryDir:     t.TempDir(),
 	})
 	if err != nil {
 		t.Fatalf("NewMemoryStore returned error: %v", err)
@@ -103,10 +101,8 @@ func TestMemoryRefinePromptAndNormalize(t *testing.T) {
 
 func TestMemoryLoadSkipsCorruptLinesAndRepair(t *testing.T) {
 	store, err := NewMemoryStore(Config{
-		MemoryEnabled:     true,
-		MemoryDir:         t.TempDir(),
-		MemoryMaxMessages: 10,
-		MemoryMaxChars:    1000,
+		MemoryEnabled: true,
+		MemoryDir:     t.TempDir(),
 	})
 	if err != nil {
 		t.Fatalf("NewMemoryStore returned error: %v", err)
@@ -149,10 +145,8 @@ not json
 
 func TestMemoryDeleteExportAndRedact(t *testing.T) {
 	store, err := NewMemoryStore(Config{
-		MemoryEnabled:     true,
-		MemoryDir:         t.TempDir(),
-		MemoryMaxMessages: 10,
-		MemoryMaxChars:    1000,
+		MemoryEnabled: true,
+		MemoryDir:     t.TempDir(),
 	})
 	if err != nil {
 		t.Fatalf("NewMemoryStore returned error: %v", err)
@@ -190,10 +184,8 @@ func TestMemoryDeleteExportAndRedact(t *testing.T) {
 
 func TestMemoryDeleteByID(t *testing.T) {
 	store, err := NewMemoryStore(Config{
-		MemoryEnabled:     true,
-		MemoryDir:         t.TempDir(),
-		MemoryMaxMessages: 10,
-		MemoryMaxChars:    1000,
+		MemoryEnabled: true,
+		MemoryDir:     t.TempDir(),
 	})
 	if err != nil {
 		t.Fatalf("NewMemoryStore returned error: %v", err)

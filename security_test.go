@@ -39,8 +39,7 @@ func TestAuthorizeMessageChecksUserAndGroup(t *testing.T) {
 
 func TestDangerousActionRequiresConfirmation(t *testing.T) {
 	app := NewApp(Config{
-		AllowedChatIDs:   map[int64]struct{}{123: {}},
-		ConfirmDangerous: true,
+		AllowedChatIDs: map[int64]struct{}{123: {}},
 	}, nil, &fakeAgent{}, nil)
 
 	msg := TelegramMessage{
@@ -63,8 +62,7 @@ func TestDangerousActionRequiresConfirmation(t *testing.T) {
 
 func TestRetryDangerousActionRequiresFreshConfirmation(t *testing.T) {
 	app := NewApp(Config{
-		AllowedChatIDs:   map[int64]struct{}{123: {}},
-		ConfirmDangerous: true,
+		AllowedChatIDs: map[int64]struct{}{123: {}},
 	}, nil, &fakeAgent{}, nil)
 
 	app.jobs.mu.Lock()

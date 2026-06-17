@@ -106,7 +106,6 @@ func TestOllamaAgentAsk(t *testing.T) {
 			AgentSystemPrompt: "system prompt",
 			OllamaURL:         server.URL,
 			OllamaModel:       "llama3.2",
-			OllamaKeepAlive:   "5m",
 		},
 		client: server.Client(),
 	}
@@ -124,9 +123,6 @@ func TestOllamaAgentAsk(t *testing.T) {
 	}
 	if request.Stream {
 		t.Fatal("expected stream=false")
-	}
-	if request.KeepAlive != "5m" {
-		t.Fatalf("keep_alive mismatch: %q", request.KeepAlive)
 	}
 	if len(request.Messages) != 2 {
 		t.Fatalf("messages length mismatch: %#v", request.Messages)

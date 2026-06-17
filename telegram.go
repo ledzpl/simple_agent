@@ -68,7 +68,6 @@ type TelegramCallbackQuery struct {
 }
 
 type SendMessageOptions struct {
-	ParseMode   string
 	ReplyMarkup *InlineKeyboardMarkup
 }
 
@@ -149,9 +148,6 @@ func (b *TelegramBot) SendMessageWithOptions(ctx context.Context, chatID int64, 
 			"chat_id": chatID,
 			"text":    chunk,
 		}
-		if options.ParseMode != "" {
-			payload["parse_mode"] = options.ParseMode
-		}
 		if replyTo > 0 || (options.ReplyMarkup != nil && i == len(chunks)-1 && originalReplyTo > 0) {
 			messageID := replyTo
 			if messageID == 0 {
@@ -163,10 +159,6 @@ func (b *TelegramBot) SendMessageWithOptions(ctx context.Context, chatID int64, 
 			payload["reply_markup"] = options.ReplyMarkup
 		}
 		message, err := b.sendMessagePayload(ctx, payload)
-		if err != nil && options.ParseMode != "" {
-			delete(payload, "parse_mode")
-			message, err = b.sendMessagePayload(ctx, payload)
-		}
 		if err != nil {
 			return sent, err
 		}
@@ -192,6 +184,21 @@ func (b *TelegramBot) SendChatAction(ctx context.Context, chatID int64, action s
 		"chat_id": chatID,
 		"action":  action,
 	})
+}
+
+func (b *TelegramBot) EditMessageText(ctx context.Context, chatID, messageID int64, text string, options SendMessageOptions) error {
+	payload := map[string]any{
+		"chat_id":    chatID,
+		"message_id": messageID,
+		"text":       strings.TrimSpace(text),
+	}
+	if payload["text"] == "" {
+		payload["text"] = "(empty response)"
+	}
+	if options.ReplyMarkup != nil {
+		payload["reply_markup"] = options.ReplyMarkup
+	}
+	return b.postJSON(ctx, "/editMessageText", payload)
 }
 
 func (b *TelegramBot) AnswerCallbackQuery(ctx context.Context, callbackID, text string) error {

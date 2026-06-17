@@ -21,36 +21,38 @@ const (
 )
 
 type AgentJob struct {
-	ID          string
-	ChatID      int64
-	UserID      int64
-	ReplyTo     int64
-	Message     string
-	ForceDebate bool
-	State       JobState
-	AgentName   string
-	Error       string
-	CreatedAt   time.Time
-	StartedAt   time.Time
-	FinishedAt  time.Time
+	ID                string
+	ChatID            int64
+	UserID            int64
+	ReplyTo           int64
+	Message           string
+	ForceDebate       bool
+	State             JobState
+	AgentName         string
+	Error             string
+	ProgressMessageID int64
+	CreatedAt         time.Time
+	StartedAt         time.Time
+	FinishedAt        time.Time
 
 	parentCtx context.Context
 	cancel    context.CancelFunc
 }
 
 type JobSnapshot struct {
-	ID          string
-	ChatID      int64
-	UserID      int64
-	ReplyTo     int64
-	Message     string
-	ForceDebate bool
-	State       JobState
-	AgentName   string
-	Error       string
-	CreatedAt   time.Time
-	StartedAt   time.Time
-	FinishedAt  time.Time
+	ID                string    `json:"id"`
+	ChatID            int64     `json:"chat_id"`
+	UserID            int64     `json:"user_id"`
+	ReplyTo           int64     `json:"reply_to"`
+	Message           string    `json:"message"`
+	ForceDebate       bool      `json:"force_debate"`
+	State             JobState  `json:"state"`
+	AgentName         string    `json:"agent_name,omitempty"`
+	Error             string    `json:"error,omitempty"`
+	ProgressMessageID int64     `json:"progress_message_id,omitempty"`
+	CreatedAt         time.Time `json:"created_at"`
+	StartedAt         time.Time `json:"started_at,omitempty"`
+	FinishedAt        time.Time `json:"finished_at,omitempty"`
 }
 
 type JobManager struct {
@@ -61,6 +63,7 @@ type JobManager struct {
 	queued       map[int64][]*AgentJob
 	history      map[int64][]*AgentJob
 	historyLimit int
+	historySink  func([]JobSnapshot)
 }
 
 func NewJobManager(maxActive int, run func(context.Context, *AgentJob)) *JobManager {
@@ -74,6 +77,45 @@ func NewJobManager(maxActive int, run func(context.Context, *AgentJob)) *JobMana
 		queued:       map[int64][]*AgentJob{},
 		history:      map[int64][]*AgentJob{},
 		historyLimit: 20,
+	}
+}
+
+func (m *JobManager) SetHistoryLimit(limit int) {
+	if limit <= 0 {
+		limit = 20
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.historyLimit = limit
+	for chatID, history := range m.history {
+		if len(history) > m.historyLimit {
+			m.history[chatID] = history[len(history)-m.historyLimit:]
+		}
+	}
+}
+
+func (m *JobManager) SetHistorySink(sink func([]JobSnapshot)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.historySink = sink
+}
+
+func (m *JobManager) LoadHistory(snapshots []JobSnapshot) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.history = map[int64][]*AgentJob{}
+	sort.SliceStable(snapshots, func(i, j int) bool {
+		return snapshots[i].CreatedAt.Before(snapshots[j].CreatedAt)
+	})
+	for _, snapshot := range snapshots {
+		if snapshot.ChatID == 0 || snapshot.ID == "" {
+			continue
+		}
+		job := jobFromSnapshot(snapshot)
+		m.history[job.ChatID] = append(m.history[job.ChatID], job)
+		if len(m.history[job.ChatID]) > m.historyLimit {
+			m.history[job.ChatID] = m.history[job.ChatID][len(m.history[job.ChatID])-m.historyLimit:]
+		}
 	}
 }
 
@@ -238,6 +280,21 @@ func (m *JobManager) SetAgentName(job *AgentJob, agentName string) {
 	job.AgentName = agentName
 }
 
+func (m *JobManager) SetProgressMessageID(job *AgentJob, messageID int64) {
+	if messageID <= 0 {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	job.ProgressMessageID = messageID
+}
+
+func (m *JobManager) ProgressMessageID(job *AgentJob) int64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return job.ProgressMessageID
+}
+
 func (m *JobManager) Finish(job *AgentJob, state JobState, agentName, errText string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -296,23 +353,63 @@ func (m *JobManager) addHistoryLocked(job *AgentJob) {
 		history = history[len(history)-m.historyLimit:]
 	}
 	m.history[job.ChatID] = history
+	m.notifyHistorySinkLocked()
 }
 
 func snapshotJob(job *AgentJob) JobSnapshot {
 	return JobSnapshot{
-		ID:          job.ID,
-		ChatID:      job.ChatID,
-		UserID:      job.UserID,
-		ReplyTo:     job.ReplyTo,
-		Message:     job.Message,
-		ForceDebate: job.ForceDebate,
-		State:       job.State,
-		AgentName:   job.AgentName,
-		Error:       job.Error,
-		CreatedAt:   job.CreatedAt,
-		StartedAt:   job.StartedAt,
-		FinishedAt:  job.FinishedAt,
+		ID:                job.ID,
+		ChatID:            job.ChatID,
+		UserID:            job.UserID,
+		ReplyTo:           job.ReplyTo,
+		Message:           job.Message,
+		ForceDebate:       job.ForceDebate,
+		State:             job.State,
+		AgentName:         job.AgentName,
+		Error:             job.Error,
+		ProgressMessageID: job.ProgressMessageID,
+		CreatedAt:         job.CreatedAt,
+		StartedAt:         job.StartedAt,
+		FinishedAt:        job.FinishedAt,
 	}
+}
+
+func jobFromSnapshot(snapshot JobSnapshot) *AgentJob {
+	return &AgentJob{
+		ID:                snapshot.ID,
+		ChatID:            snapshot.ChatID,
+		UserID:            snapshot.UserID,
+		ReplyTo:           snapshot.ReplyTo,
+		Message:           snapshot.Message,
+		ForceDebate:       snapshot.ForceDebate,
+		State:             snapshot.State,
+		AgentName:         snapshot.AgentName,
+		Error:             snapshot.Error,
+		ProgressMessageID: snapshot.ProgressMessageID,
+		CreatedAt:         snapshot.CreatedAt,
+		StartedAt:         snapshot.StartedAt,
+		FinishedAt:        snapshot.FinishedAt,
+	}
+}
+
+func (m *JobManager) notifyHistorySinkLocked() {
+	if m.historySink == nil {
+		return
+	}
+	m.historySink(m.historySnapshotsLocked())
+}
+
+func (m *JobManager) historySnapshotsLocked() []JobSnapshot {
+	var out []JobSnapshot
+	for _, history := range m.history {
+		for _, job := range history {
+			out = append(out, snapshotJob(job))
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return out[i].CreatedAt.Before(out[j].CreatedAt)
+	})
+	return out
 }
 
 func newJobID() string {

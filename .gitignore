@@ -2,5 +2,6 @@
 telegram-local-agent
 tmp/
 .telegram-memory/
+.telegram-state/
 .*.swp
 TODO.md

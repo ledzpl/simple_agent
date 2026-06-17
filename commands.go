@@ -99,8 +99,8 @@ func (a *App) handleMemoryStatus(ctx context.Context, msg TelegramMessage) {
 		stats.InvalidLines,
 		stats.Bytes,
 		stats.Path,
-		a.cfg.MemoryMaxMessages,
-		a.cfg.MemoryMaxChars,
+		memoryMaxMessages,
+		memoryMaxChars,
 	), msg.MessageID)
 }
 

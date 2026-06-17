@@ -23,7 +23,7 @@ func (a *sequenceAgent) Ask(ctx context.Context, prompt string) (string, error) 
 }
 
 func TestAnswerWithDebate(t *testing.T) {
-	general := &sequenceAgent{answers: []string{"final answer"}}
+	general := &sequenceAgent{answers: []string{"general view", "final answer"}}
 	coder := &sequenceAgent{answers: []string{"coder view"}}
 	critic := &sequenceAgent{answers: []string{"critic view"}}
 
@@ -35,12 +35,7 @@ func TestAnswerWithDebate(t *testing.T) {
 			{Name: "critic", Description: "critic", Match: []string{"검토"}, Backend: BackendCommand, Agent: critic},
 		},
 	}
-	app := NewAppWithRouter(Config{
-		DebateMaxAgents:      2,
-		DebateRounds:         1,
-		DebateShowTranscript: false,
-		AgentTimeout:         time.Second,
-	}, nil, router, nil)
+	app := NewAppWithRouter(Config{AgentTimeout: time.Second}, nil, router, nil)
 
 	result, err := app.answerWithDebate(context.Background(), 123, "코드 검토해줘", "Memory: prior")
 	if err != nil {
@@ -49,8 +44,8 @@ func TestAnswerWithDebate(t *testing.T) {
 	if result.Final != "final answer" {
 		t.Fatalf("final answer mismatch: %q", result.Final)
 	}
-	if len(result.Transcript) != 2 {
-		t.Fatalf("expected two debate turns, got %#v", result.Transcript)
+	if len(result.Transcript) != 3 {
+		t.Fatalf("expected three debate turns, got %#v", result.Transcript)
 	}
 	if result.Transcript[0].AgentName != "coder" || result.Transcript[0].Content != "coder view" {
 		t.Fatalf("first turn mismatch: %#v", result.Transcript[0])
@@ -58,8 +53,8 @@ func TestAnswerWithDebate(t *testing.T) {
 	if !strings.Contains(critic.prompts[0], "coder view") {
 		t.Fatalf("second participant did not receive prior transcript:\n%s", critic.prompts[0])
 	}
-	if !strings.Contains(general.prompts[0], "coder view") || !strings.Contains(general.prompts[0], "critic view") {
-		t.Fatalf("synthesis prompt missing transcript:\n%s", general.prompts[0])
+	if !strings.Contains(general.prompts[1], "coder view") || !strings.Contains(general.prompts[1], "critic view") {
+		t.Fatalf("synthesis prompt missing transcript:\n%s", general.prompts[1])
 	}
 }
 

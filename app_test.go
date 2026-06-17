@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -24,10 +26,8 @@ func (a *fakeAgent) Ask(ctx context.Context, prompt string) (string, error) {
 
 func TestAppRememberStoresRefinedNote(t *testing.T) {
 	store, err := NewMemoryStore(Config{
-		MemoryEnabled:     true,
-		MemoryDir:         t.TempDir(),
-		MemoryMaxMessages: 10,
-		MemoryMaxChars:    1000,
+		MemoryEnabled: true,
+		MemoryDir:     t.TempDir(),
 	})
 	if err != nil {
 		t.Fatalf("NewMemoryStore returned error: %v", err)
@@ -35,9 +35,7 @@ func TestAppRememberStoresRefinedNote(t *testing.T) {
 
 	agent := &fakeAgent{answer: "사용자의 이름은 Watson이다."}
 	app := NewApp(Config{
-		MemoryRefine:     true,
-		MemoryRefineMax:  1000,
-		MemoryRefineTime: time.Second,
+		MemoryRefine: true,
 	}, nil, agent, store)
 
 	if err := app.remember(context.Background(), 123, "안녕 내 이름은 Watson이야", "알겠습니다."); err != nil {
@@ -67,19 +65,15 @@ func TestAppRememberStoresRefinedNote(t *testing.T) {
 
 func TestAppRememberSkipsNoMemory(t *testing.T) {
 	store, err := NewMemoryStore(Config{
-		MemoryEnabled:     true,
-		MemoryDir:         t.TempDir(),
-		MemoryMaxMessages: 10,
-		MemoryMaxChars:    1000,
+		MemoryEnabled: true,
+		MemoryDir:     t.TempDir(),
 	})
 	if err != nil {
 		t.Fatalf("NewMemoryStore returned error: %v", err)
 	}
 
 	app := NewApp(Config{
-		MemoryRefine:     true,
-		MemoryRefineMax:  1000,
-		MemoryRefineTime: time.Second,
+		MemoryRefine: true,
 	}, nil, &fakeAgent{answer: "NO_MEMORY"}, store)
 
 	if err := app.remember(context.Background(), 123, "고마워", "천만에요."); err != nil {
@@ -96,19 +90,15 @@ func TestAppRememberSkipsNoMemory(t *testing.T) {
 
 func TestAppRememberReturnsRefineError(t *testing.T) {
 	store, err := NewMemoryStore(Config{
-		MemoryEnabled:     true,
-		MemoryDir:         t.TempDir(),
-		MemoryMaxMessages: 10,
-		MemoryMaxChars:    1000,
+		MemoryEnabled: true,
+		MemoryDir:     t.TempDir(),
 	})
 	if err != nil {
 		t.Fatalf("NewMemoryStore returned error: %v", err)
 	}
 
 	app := NewApp(Config{
-		MemoryRefine:     true,
-		MemoryRefineMax:  1000,
-		MemoryRefineTime: time.Second,
+		MemoryRefine: true,
 	}, nil, &fakeAgent{err: errors.New("boom")}, store)
 
 	err = app.remember(context.Background(), 123, "hello", "answer")
@@ -118,7 +108,7 @@ func TestAppRememberReturnsRefineError(t *testing.T) {
 }
 
 func TestAnswerActionsUsesMemoryID(t *testing.T) {
-	app := NewApp(Config{TelegramAnswerActions: true}, nil, &fakeAgent{}, &MemoryStore{})
+	app := NewApp(Config{}, nil, &fakeAgent{}, &MemoryStore{})
 	markup := app.answerActions("memory-123", nil)
 	if markup == nil || len(markup.InlineKeyboard) != 1 {
 		t.Fatalf("expected one action row, got %#v", markup)
@@ -134,5 +124,61 @@ func TestAnswerActionsUsesMemoryID(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("answer actions missing memory-specific delete callback: %#v", markup)
+	}
+}
+
+func TestAppRunPersistsTelegramOffset(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/getUpdates":
+			if r.URL.Query().Get("offset") == "43" {
+				cancel()
+				_, _ = w.Write([]byte(`{"ok": true, "result": []}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{
+				"ok": true,
+				"result": [{
+					"update_id": 42,
+					"message": {
+						"message_id": 7,
+						"text": "/id",
+						"chat": {"id": 123, "type": "private"},
+						"from": {"id": 456}
+					}
+				}]
+			}`))
+		case "/sendMessage":
+			_, _ = w.Write([]byte(`{"ok": true, "result": {"message_id": 8, "chat": {"id": 123}}}`))
+		default:
+			t.Fatalf("unexpected Telegram API path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	store, err := NewStateStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStateStore returned error: %v", err)
+	}
+	bot := &TelegramBot{baseURL: server.URL, client: server.Client()}
+	app := NewApp(Config{}, bot, &fakeAgent{answer: "unused"}, nil)
+	if err := app.UseStateStore(ctx, store); err != nil {
+		t.Fatalf("UseStateStore returned error: %v", err)
+	}
+
+	err = app.Run(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run returned %v, want context canceled", err)
+	}
+	offset, err := store.LoadOffset(context.Background())
+	if err != nil {
+		t.Fatalf("LoadOffset returned error: %v", err)
+	}
+	if offset != 43 {
+		t.Fatalf("persisted offset = %d, want 43", offset)
 	}
 }

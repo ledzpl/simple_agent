@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"time"
 )
 
 func (a *App) memoryContext(ctx context.Context, chatID int64) (string, error) {
@@ -39,20 +38,16 @@ func (a *App) rememberWithAgentID(ctx context.Context, agent Agent, chatID int64
 
 func (a *App) refinedMemoryNote(ctx context.Context, agent Agent, userMessage, assistantMessage string) (string, error) {
 	if !a.cfg.MemoryRefine {
-		return compactMemoryNote(userMessage, assistantMessage, a.cfg.MemoryRefineMax), nil
+		return compactMemoryNote(userMessage, assistantMessage, memoryRefineMaxChars), nil
 	}
 
-	timeout := a.cfg.MemoryRefineTime
-	if timeout <= 0 {
-		timeout = 90 * time.Second
-	}
-	refineCtx, cancel := context.WithTimeout(ctx, timeout)
+	refineCtx, cancel := context.WithTimeout(ctx, memoryRefineTimeout)
 	defer cancel()
 
-	prompt := buildMemoryRefinePrompt(userMessage, assistantMessage, a.cfg.MemoryRefineMax)
+	prompt := buildMemoryRefinePrompt(userMessage, assistantMessage, memoryRefineMaxChars)
 	note, err := agent.Ask(refineCtx, prompt)
 	if err != nil {
 		return "", fmt.Errorf("refine memory: %w", err)
 	}
-	return normalizeMemoryNote(note, a.cfg.MemoryRefineMax), nil
+	return normalizeMemoryNote(note, memoryRefineMaxChars), nil
 }

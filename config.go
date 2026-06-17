@@ -14,49 +14,44 @@ const (
 	BackendCodex   = "codex"
 	BackendCommand = "command"
 	BackendOllama  = "ollama"
+
+	defaultAgentName     = "default"
+	maxActiveJobsPerChat = 1
+	jobHistoryLimit      = 20
+	jobProgressInterval  = 60 * time.Second
+	stateDir             = ".telegram-state"
+	debateMaxAgents      = 4
+	debateRounds         = 1
+	memoryMaxMessages    = 20
+	memoryMaxChars       = 12000
+	memoryRefineMaxChars = 1000
+	memoryRefineTimeout  = 90 * time.Second
 )
 
 type Config struct {
-	TelegramToken         string
-	AllowedChatIDs        map[int64]struct{}
-	AllowedUserIDs        map[int64]struct{}
-	AllowAllChats         bool
-	AllowGroupChats       bool
-	TelegramParseMode     string
-	TelegramAnswerActions bool
-	MaxActiveJobsPerChat  int
-	JobProgressInterval   time.Duration
-	ConfirmDangerous      bool
-	AgentBackend          string
-	AgentTimeout          time.Duration
-	AgentSystemPrompt     string
-	AgentsFile            string
-	AgentsFileExplicit    bool
-	DefaultAgentName      string
-	DebateEnabled         bool
-	DebateMaxAgents       int
-	DebateRounds          int
-	DebateShowTranscript  bool
-	MemoryEnabled         bool
-	MemoryDir             string
-	MemoryMaxMessages     int
-	MemoryMaxChars        int
-	MemoryRefine          bool
-	MemoryRefineMax       int
-	MemoryRefineTime      time.Duration
+	TelegramToken     string
+	AllowedChatIDs    map[int64]struct{}
+	AllowedUserIDs    map[int64]struct{}
+	AllowGroupChats   bool
+	AgentBackend      string
+	AgentTimeout      time.Duration
+	AgentSystemPrompt string
+	AgentsFile        string
+	DebateEnabled     bool
+	MemoryEnabled     bool
+	MemoryDir         string
+	MemoryRefine      bool
 
-	CodexBin       string
-	CodexWorkDir   string
-	CodexModel     string
-	CodexSandbox   string
-	CodexExtraArgs []string
+	CodexBin     string
+	CodexWorkDir string
+	CodexModel   string
+	CodexSandbox string
 
 	Command          []string
 	CommandAllowlist map[string]struct{}
 
-	OllamaURL       string
-	OllamaModel     string
-	OllamaKeepAlive string
+	OllamaURL   string
+	OllamaModel string
 }
 
 func LoadConfig() (Config, error) {
@@ -65,38 +60,22 @@ func LoadConfig() (Config, error) {
 	}
 
 	cfg := Config{
-		TelegramToken:         strings.TrimSpace(os.Getenv("TELEGRAM_BOT_TOKEN")),
-		AllowAllChats:         envBool("TELEGRAM_ALLOW_ALL", false),
-		AllowGroupChats:       envBool("TELEGRAM_ALLOW_GROUPS", false),
-		TelegramParseMode:     normalizeTelegramParseMode(os.Getenv("TELEGRAM_PARSE_MODE")),
-		TelegramAnswerActions: envBool("TELEGRAM_ANSWER_ACTIONS", true),
-		MaxActiveJobsPerChat:  envInt("TELEGRAM_MAX_ACTIVE_JOBS_PER_CHAT", 1),
-		JobProgressInterval:   envDuration("TELEGRAM_JOB_PROGRESS_INTERVAL", 60*time.Second),
-		ConfirmDangerous:      envBool("TELEGRAM_CONFIRM_DANGEROUS", true),
-		AgentBackend:          envDefault("AGENT_BACKEND", BackendCodex),
-		AgentTimeout:          envDuration("AGENT_TIMEOUT", 5*time.Minute),
-		AgentSystemPrompt:     envDefault("AGENT_SYSTEM_PROMPT", defaultSystemPrompt()),
-		AgentsFile:            envDefault("AGENTS_FILE", "agents.json"),
-		AgentsFileExplicit:    strings.TrimSpace(os.Getenv("AGENTS_FILE")) != "",
-		DefaultAgentName:      envDefault("DEFAULT_AGENT", "default"),
-		DebateEnabled:         envBool("DEBATE_ENABLED", false),
-		DebateMaxAgents:       envInt("DEBATE_MAX_AGENTS", 4),
-		DebateRounds:          envInt("DEBATE_ROUNDS", 1),
-		DebateShowTranscript:  envBool("DEBATE_SHOW_TRANSCRIPT", true),
-		MemoryEnabled:         envBool("MEMORY_ENABLED", true),
-		MemoryDir:             envDefault("MEMORY_DIR", ".telegram-memory"),
-		MemoryMaxMessages:     envInt("MEMORY_MAX_MESSAGES", 20),
-		MemoryMaxChars:        envInt("MEMORY_MAX_CHARS", 12000),
-		MemoryRefine:          envBool("MEMORY_REFINE", true),
-		MemoryRefineMax:       envInt("MEMORY_REFINE_MAX_CHARS", 1000),
-		MemoryRefineTime:      envDuration("MEMORY_REFINE_TIMEOUT", 90*time.Second),
-		CodexBin:              envDefault("CODEX_BIN", "codex"),
-		CodexWorkDir:          envDefault("CODEX_WORKDIR", "."),
-		CodexSandbox:          envDefault("CODEX_SANDBOX", "read-only"),
-		CodexModel:            strings.TrimSpace(os.Getenv("CODEX_MODEL")),
-		OllamaURL:             envDefault("OLLAMA_URL", "http://localhost:11434"),
-		OllamaModel:           strings.TrimSpace(os.Getenv("OLLAMA_MODEL")),
-		OllamaKeepAlive:       strings.TrimSpace(os.Getenv("OLLAMA_KEEP_ALIVE")),
+		TelegramToken:     strings.TrimSpace(os.Getenv("TELEGRAM_BOT_TOKEN")),
+		AllowGroupChats:   envBool("TELEGRAM_ALLOW_GROUPS", false),
+		AgentBackend:      envDefault("AGENT_BACKEND", BackendCodex),
+		AgentTimeout:      envDuration("AGENT_TIMEOUT", 5*time.Minute),
+		AgentSystemPrompt: envDefault("AGENT_SYSTEM_PROMPT", defaultSystemPrompt()),
+		AgentsFile:        envDefault("AGENTS_FILE", "agents.json"),
+		DebateEnabled:     envBool("DEBATE_ENABLED", false),
+		MemoryEnabled:     envBool("MEMORY_ENABLED", true),
+		MemoryDir:         envDefault("MEMORY_DIR", ".telegram-memory"),
+		MemoryRefine:      envBool("MEMORY_REFINE", true),
+		CodexBin:          envDefault("CODEX_BIN", "codex"),
+		CodexWorkDir:      envDefault("CODEX_WORKDIR", "."),
+		CodexSandbox:      envDefault("CODEX_SANDBOX", "read-only"),
+		CodexModel:        strings.TrimSpace(os.Getenv("CODEX_MODEL")),
+		OllamaURL:         envDefault("OLLAMA_URL", "http://localhost:11434"),
+		OllamaModel:       strings.TrimSpace(os.Getenv("OLLAMA_MODEL")),
 	}
 
 	if cfg.TelegramToken == "" {
@@ -134,14 +113,6 @@ func LoadConfig() (Config, error) {
 			return Config{}, fmt.Errorf("resolve MEMORY_DIR: %w", err)
 		}
 		cfg.MemoryDir = abs
-	}
-
-	if raw := strings.TrimSpace(os.Getenv("CODEX_EXTRA_ARGS")); raw != "" {
-		args, err := splitCommandLine(raw)
-		if err != nil {
-			return Config{}, fmt.Errorf("parse CODEX_EXTRA_ARGS: %w", err)
-		}
-		cfg.CodexExtraArgs = args
 	}
 
 	if cfg.AgentBackend == BackendCommand {
@@ -218,21 +189,6 @@ func envBool(key string, fallback bool) bool {
 	}
 }
 
-func normalizeTelegramParseMode(value string) string {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "":
-		return ""
-	case "markdown":
-		return "Markdown"
-	case "markdownv2", "markdown_v2", "markdown-v2":
-		return "MarkdownV2"
-	case "html":
-		return "HTML"
-	default:
-		return ""
-	}
-}
-
 func envDuration(key string, fallback time.Duration) time.Duration {
 	value := strings.TrimSpace(os.Getenv(key))
 	if value == "" {
@@ -259,18 +215,6 @@ func parseDurationValue(value string) (time.Duration, error) {
 		return time.Duration(seconds) * time.Second, nil
 	}
 	return 0, fmt.Errorf("invalid duration %q", value)
-}
-
-func envInt(key string, fallback int) int {
-	value := strings.TrimSpace(os.Getenv(key))
-	if value == "" {
-		return fallback
-	}
-	parsed, err := strconv.Atoi(value)
-	if err != nil || parsed < 0 {
-		return fallback
-	}
-	return parsed
 }
 
 func parseAllowedChatIDs(raw string) (map[int64]struct{}, error) {

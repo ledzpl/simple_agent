@@ -15,6 +15,7 @@ type App struct {
 	bot    *TelegramBot
 	router *AgentRouter
 	memory *MemoryStore
+	state  *StateStore
 
 	jobs              *JobManager
 	confirmations     *ConfirmationStore
@@ -22,7 +23,7 @@ type App struct {
 }
 
 func NewApp(cfg Config, bot *TelegramBot, agent Agent, memory *MemoryStore) *App {
-	return NewAppWithRouter(cfg, bot, NewSingleAgentRouter(cfg.DefaultAgentName, "Default local agent", []string{"*"}, agent, cfg.AgentBackend), memory)
+	return NewAppWithRouter(cfg, bot, NewSingleAgentRouter(defaultAgentName, "Default local agent", []string{"*"}, agent, cfg.AgentBackend), memory)
 }
 
 func NewAppWithRouter(cfg Config, bot *TelegramBot, router *AgentRouter, memory *MemoryStore) *App {
@@ -34,13 +35,42 @@ func NewAppWithRouter(cfg Config, bot *TelegramBot, router *AgentRouter, memory 
 		confirmations:     NewConfirmationStore(10 * time.Minute),
 		debateTranscripts: map[string]string{},
 	}
-	app.jobs = NewJobManager(cfg.MaxActiveJobsPerChat, app.executeJob)
+	app.jobs = NewJobManager(maxActiveJobsPerChat, app.executeJob)
+	app.jobs.SetHistoryLimit(jobHistoryLimit)
 	return app
+}
+
+func (a *App) UseStateStore(ctx context.Context, state *StateStore) error {
+	a.state = state
+	if state == nil || a.jobs == nil {
+		return nil
+	}
+	history, err := state.LoadJobHistory(ctx)
+	if err != nil {
+		return err
+	}
+	a.jobs.LoadHistory(history)
+	a.jobs.SetHistorySink(func(jobs []JobSnapshot) {
+		if err := state.SaveJobHistory(jobs); err != nil {
+			log.Printf("save job history failed: %v", err)
+		}
+	})
+	return nil
 }
 
 func (a *App) Run(ctx context.Context) error {
 	var offset int64
 	backoff := time.Second
+	if a.state != nil {
+		loaded, err := a.state.LoadOffset(ctx)
+		if err != nil {
+			return err
+		}
+		offset = loaded
+		if offset > 0 {
+			log.Printf("loaded telegram update offset=%d", offset)
+		}
+	}
 
 	for {
 		select {
@@ -64,8 +94,9 @@ func (a *App) Run(ctx context.Context) error {
 		backoff = time.Second
 
 		for _, update := range updates {
+			nextOffset := offset
 			if update.UpdateID >= offset {
-				offset = update.UpdateID + 1
+				nextOffset = update.UpdateID + 1
 			}
 			if update.Message != nil {
 				a.handleMessage(ctx, *update.Message)
@@ -73,8 +104,24 @@ func (a *App) Run(ctx context.Context) error {
 			if update.CallbackQuery != nil {
 				a.handleCallback(ctx, *update.CallbackQuery)
 			}
+			if nextOffset > offset {
+				if err := a.saveOffset(ctx, nextOffset); err != nil {
+					return err
+				}
+				offset = nextOffset
+			}
 		}
 	}
+}
+
+func (a *App) saveOffset(ctx context.Context, offset int64) error {
+	if a.state == nil {
+		return nil
+	}
+	if err := a.state.SaveOffset(ctx, offset); err != nil {
+		return fmt.Errorf("save telegram update offset %d: %w", offset, err)
+	}
+	return nil
 }
 
 func (a *App) handleMessage(ctx context.Context, msg TelegramMessage) {
@@ -159,18 +206,23 @@ func (a *App) enqueueAgentJob(ctx context.Context, msg TelegramMessage, text str
 		ForceDebate: forceDebate,
 	})
 	if snapshot.State == JobQueued {
-		_ = a.sendMessage(ctx, msg.Chat.ID, fmt.Sprintf("작업이 대기열에 추가되었습니다.\njob: %s\n/status 로 상태를 볼 수 있고 /cancel %s 로 취소할 수 있습니다.", snapshot.ID, snapshot.ID), msg.MessageID)
+		_ = a.sendMessageWithMarkup(ctx, msg.Chat.ID, fmt.Sprintf("작업이 대기열에 추가되었습니다.\njob: %s\n/status 로 상태를 볼 수 있고 /cancel %s 로 취소할 수 있습니다.", snapshot.ID, snapshot.ID), msg.MessageID, jobQueuedActions(snapshot.ID))
 	}
 	return snapshot
 }
 
 func (a *App) executeJob(ctx context.Context, job *AgentJob) {
-	_ = a.sendMessage(ctx, job.ChatID, fmt.Sprintf("작업을 시작합니다.\njob: %s", job.ID), job.ReplyTo)
+	progressID := int64(0)
+	if sent, err := a.sendMessageWithMarkupResult(ctx, job.ChatID, formatJobProgress(job, "작업을 시작합니다.", ""), job.ReplyTo, jobRunningActions(job.ID)); err == nil && len(sent) > 0 {
+		progressID = sent[len(sent)-1].MessageID
+		a.jobs.SetProgressMessageID(job, progressID)
+	} else if err != nil {
+		log.Printf("send job progress failed chat_id=%d job=%s: %v", job.ChatID, job.ID, err)
+	}
 
 	route, err := a.routeMessage(job.Message)
 	if err != nil {
-		_ = a.sendMessage(ctx, job.ChatID, err.Error(), job.ReplyTo)
-		a.jobs.Finish(job, JobFailed, "", err.Error())
+		a.finishJobError(ctx, job, "", "agent 라우팅에 실패했습니다.", err)
 		return
 	}
 	a.jobs.SetAgentName(job, route.Runner.Name)
@@ -180,15 +232,14 @@ func (a *App) executeJob(ctx context.Context, job *AgentJob) {
 	memoryContext, err := a.memoryContext(ctx, job.ChatID)
 	if err != nil {
 		log.Printf("memory load failed chat_id=%d: %v", job.ChatID, err)
-		_ = a.sendMessage(ctx, job.ChatID, "저장된 대화 기억을 읽지 못했습니다.\n\n"+err.Error(), job.ReplyTo)
-		a.jobs.Finish(job, JobFailed, route.Runner.Name, err.Error())
+		a.finishJobError(ctx, job, route.Runner.Name, "저장된 대화 기억을 읽지 못했습니다.", err)
 		return
 	}
 	prompt := promptWithMemory(memoryContext, route.Message)
 
 	done := make(chan struct{})
 	go a.keepTyping(ctx, job.ChatID, done)
-	go a.keepJobProgress(ctx, job, done)
+	go a.keepJobProgress(ctx, job, progressID, done)
 
 	answerAgent := route.Runner
 	answer := ""
@@ -220,8 +271,7 @@ func (a *App) executeJob(ctx context.Context, job *AgentJob) {
 	}
 
 	if strings.TrimSpace(answer) == "" {
-		_ = a.sendMessage(ctx, job.ChatID, "agent가 빈 응답을 반환했습니다.", job.ReplyTo)
-		a.jobs.Finish(job, JobFailed, answerAgent.Name, "empty answer")
+		a.finishJobError(ctx, job, answerAgent.Name, "agent가 빈 응답을 반환했습니다.", errors.New("empty answer"))
 		return
 	}
 
@@ -232,14 +282,16 @@ func (a *App) executeJob(ctx context.Context, job *AgentJob) {
 	safeAnswer := redactSecrets(answer)
 	if err := a.sendMessageWithMarkup(ctx, job.ChatID, safeAnswer, job.ReplyTo, a.answerActions(memoryID, transcript)); err != nil {
 		log.Printf("send answer failed chat_id=%d: %v", job.ChatID, err)
-		a.jobs.Finish(job, JobFailed, answerAgent.Name, err.Error())
+		a.finishJobError(ctx, job, answerAgent.Name, "Telegram 답변 전송에 실패했습니다.", err)
 		return
 	}
+	a.updateJobProgress(context.Background(), job, progressID, formatJobProgress(job, "답변을 전송했습니다.", "기억을 정리 중입니다."), nil)
 
 	if _, err := a.rememberWithAgentID(ctx, answerAgent.Agent, job.ChatID, route.Message, safeAnswer, memoryID); err != nil {
 		log.Printf("memory append failed chat_id=%d: %v", job.ChatID, err)
 	}
 	a.jobs.Finish(job, JobSucceeded, answerAgent.Name, "")
+	a.updateJobProgress(context.Background(), job, progressID, formatJobProgress(job, "작업이 완료되었습니다.", ""), jobDoneActions(job.ID))
 }
 
 func (a *App) handleCallback(ctx context.Context, query TelegramCallbackQuery) {
@@ -281,6 +333,42 @@ func (a *App) handleCallback(ctx context.Context, query TelegramCallbackQuery) {
 		}
 		a.answerCallback(ctx, query.ID, "토론 기록을 보냅니다.")
 		_ = a.sendMessageWithMarkup(ctx, chatID, transcript, query.Message.MessageID, hideMessageActions())
+	case strings.HasPrefix(query.Data, "job_cancel:"):
+		jobID := strings.TrimPrefix(query.Data, "job_cancel:")
+		canceled, err := a.jobs.Cancel(chatID, jobID)
+		if err != nil {
+			a.answerCallback(ctx, query.ID, "취소 실패: "+truncate(err.Error(), 120))
+			return
+		}
+		a.answerCallback(ctx, query.ID, "작업을 취소했습니다.")
+		_ = a.editMessageWithMarkup(ctx, chatID, query.Message.MessageID, formatJobStatus(canceled), jobCanceledActions(jobID))
+	case strings.HasPrefix(query.Data, "job_retry:"):
+		jobID := strings.TrimPrefix(query.Data, "job_retry:")
+		source, err := a.jobs.RetrySource(chatID, jobID)
+		if err != nil {
+			a.answerCallback(ctx, query.ID, "재시도 실패: "+truncate(err.Error(), 120))
+			return
+		}
+		if a.needsDangerConfirmation(source.Message) {
+			confirmationMessage := *query.Message
+			confirmationMessage.From = query.From
+			confirmationMessage.Text = source.Message
+			confirmation := a.confirmations.Add(confirmationMessage, source.Message, source.ForceDebate)
+			a.answerCallback(ctx, query.ID, "확인이 필요합니다.")
+			_ = a.sendMessage(ctx, chatID, fmt.Sprintf("이전 작업 요청이 위험할 수 있습니다. 다시 실행하려면 다음 명령을 보내세요.\n/confirm %s", confirmation.ID), query.Message.MessageID)
+			return
+		}
+		snapshot := a.jobs.Enqueue(ctx, &AgentJob{
+			ChatID:      source.ChatID,
+			UserID:      source.UserID,
+			ReplyTo:     source.ReplyTo,
+			Message:     source.Message,
+			ForceDebate: source.ForceDebate,
+		})
+		a.answerCallback(ctx, query.ID, "작업을 다시 등록했습니다.")
+		if snapshot.State == JobQueued {
+			_ = a.sendMessageWithMarkup(ctx, chatID, fmt.Sprintf("작업을 다시 등록했습니다.\n%s", formatJobLine(snapshot)), query.Message.MessageID, jobQueuedActions(snapshot.ID))
+		}
 	case query.Data == "delete_message":
 		a.answerCallback(ctx, query.ID, "숨겼습니다.")
 		if a.bot != nil {
@@ -303,21 +391,30 @@ func (a *App) sendMessage(ctx context.Context, chatID int64, text string, replyT
 }
 
 func (a *App) sendMessageWithMarkup(ctx context.Context, chatID int64, text string, replyTo int64, markup *InlineKeyboardMarkup) error {
-	if a.bot == nil {
-		return nil
-	}
-	options := SendMessageOptions{
-		ParseMode:   a.cfg.TelegramParseMode,
-		ReplyMarkup: markup,
-	}
-	_, err := a.bot.SendMessageWithOptions(ctx, chatID, text, replyTo, options)
+	_, err := a.sendMessageWithMarkupResult(ctx, chatID, text, replyTo, markup)
 	return err
 }
 
-func (a *App) answerActions(memoryID string, transcript []DebateTurn) *InlineKeyboardMarkup {
-	if !a.cfg.TelegramAnswerActions {
+func (a *App) sendMessageWithMarkupResult(ctx context.Context, chatID int64, text string, replyTo int64, markup *InlineKeyboardMarkup) ([]TelegramMessage, error) {
+	if a.bot == nil {
+		return nil, nil
+	}
+	options := SendMessageOptions{
+		ReplyMarkup: markup,
+	}
+	return a.bot.SendMessageWithOptions(ctx, chatID, text, replyTo, options)
+}
+
+func (a *App) editMessageWithMarkup(ctx context.Context, chatID, messageID int64, text string, markup *InlineKeyboardMarkup) error {
+	if a.bot == nil || messageID <= 0 {
 		return nil
 	}
+	return a.bot.EditMessageText(ctx, chatID, messageID, text, SendMessageOptions{
+		ReplyMarkup: markup,
+	})
+}
+
+func (a *App) answerActions(memoryID string, transcript []DebateTurn) *InlineKeyboardMarkup {
 	row := []InlineKeyboardButton{
 		{Text: "다시 생성", CallbackData: "regenerate"},
 	}
@@ -333,10 +430,68 @@ func (a *App) answerActions(memoryID string, transcript []DebateTurn) *InlineKey
 	return &InlineKeyboardMarkup{InlineKeyboard: keyboard}
 }
 
+func jobQueuedActions(jobID string) *InlineKeyboardMarkup {
+	if strings.TrimSpace(jobID) == "" {
+		return nil
+	}
+	return &InlineKeyboardMarkup{InlineKeyboard: [][]InlineKeyboardButton{{
+		{Text: "취소", CallbackData: "job_cancel:" + jobID},
+	}}}
+}
+
+func jobRunningActions(jobID string) *InlineKeyboardMarkup {
+	return jobQueuedActions(jobID)
+}
+
+func jobDoneActions(jobID string) *InlineKeyboardMarkup {
+	if strings.TrimSpace(jobID) == "" {
+		return nil
+	}
+	return &InlineKeyboardMarkup{InlineKeyboard: [][]InlineKeyboardButton{{
+		{Text: "재시도", CallbackData: "job_retry:" + jobID},
+	}}}
+}
+
+func jobFailedActions(jobID string) *InlineKeyboardMarkup {
+	return jobDoneActions(jobID)
+}
+
+func jobCanceledActions(jobID string) *InlineKeyboardMarkup {
+	return jobDoneActions(jobID)
+}
+
 func hideMessageActions() *InlineKeyboardMarkup {
 	return &InlineKeyboardMarkup{InlineKeyboard: [][]InlineKeyboardButton{{
 		{Text: "토론 숨기기", CallbackData: "delete_message"},
 	}}}
+}
+
+func (a *App) updateJobProgress(ctx context.Context, job *AgentJob, progressID int64, text string, markup *InlineKeyboardMarkup) {
+	if progressID <= 0 {
+		return
+	}
+	if err := a.editMessageWithMarkup(ctx, job.ChatID, progressID, text, markup); err != nil {
+		log.Printf("edit job progress failed chat_id=%d job=%s message_id=%d: %v", job.ChatID, job.ID, progressID, err)
+	}
+}
+
+func formatJobProgress(job *AgentJob, status, detail string) string {
+	var out strings.Builder
+	out.WriteString(strings.TrimSpace(status))
+	if out.Len() == 0 {
+		out.WriteString("작업 상태")
+	}
+	out.WriteString("\njob: ")
+	out.WriteString(job.ID)
+	if job.AgentName != "" {
+		out.WriteString("\nagent: ")
+		out.WriteString(job.AgentName)
+	}
+	if detail = strings.TrimSpace(detail); detail != "" {
+		out.WriteString("\n")
+		out.WriteString(detail)
+	}
+	return out.String()
 }
 
 func (a *App) storeDebateTranscript(transcript string) string {
@@ -389,11 +544,8 @@ func (a *App) keepTyping(ctx context.Context, chatID int64, done <-chan struct{}
 	}
 }
 
-func (a *App) keepJobProgress(ctx context.Context, job *AgentJob, done <-chan struct{}) {
-	interval := a.cfg.JobProgressInterval
-	if interval <= 0 {
-		return
-	}
+func (a *App) keepJobProgress(ctx context.Context, job *AgentJob, progressID int64, done <-chan struct{}) {
+	interval := jobProgressInterval
 	timer := time.NewTimer(interval)
 	defer timer.Stop()
 	for {
@@ -407,7 +559,7 @@ func (a *App) keepJobProgress(ctx context.Context, job *AgentJob, done <-chan st
 			if elapsed < 0 {
 				elapsed = 0
 			}
-			_ = a.sendMessage(ctx, job.ChatID, fmt.Sprintf("작업 진행 중입니다.\njob: %s\nelapsed: %s", job.ID, elapsed), job.ReplyTo)
+			a.updateJobProgress(ctx, job, progressID, formatJobProgress(job, "작업 진행 중입니다.", "elapsed: "+elapsed.String()), jobRunningActions(job.ID))
 			timer.Reset(interval)
 		}
 	}
@@ -422,6 +574,12 @@ func (a *App) finishJobError(ctx context.Context, job *AgentJob, agentName, pref
 		state = JobCanceled
 		message = "작업이 취소되었습니다.\njob: " + job.ID
 		sendCtx = context.Background()
+	}
+	progressID := a.jobs.ProgressMessageID(job)
+	if state == JobCanceled {
+		a.updateJobProgress(sendCtx, job, progressID, formatJobProgress(job, "작업이 취소되었습니다.", ""), jobCanceledActions(job.ID))
+	} else {
+		a.updateJobProgress(sendCtx, job, progressID, formatJobProgress(job, "작업이 실패했습니다.", truncate(errText, 240)), jobFailedActions(job.ID))
 	}
 	_ = a.sendMessage(sendCtx, job.ChatID, message, job.ReplyTo)
 	a.jobs.Finish(job, state, agentName, errText)

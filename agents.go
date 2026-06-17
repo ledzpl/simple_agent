@@ -18,17 +18,15 @@ type AgentDefinition struct {
 	SystemPrompt string   `json:"system_prompt"`
 	Timeout      string   `json:"timeout"`
 
-	CodexBin       string   `json:"codex_bin"`
-	CodexWorkDir   string   `json:"codex_workdir"`
-	CodexModel     string   `json:"codex_model"`
-	CodexSandbox   string   `json:"codex_sandbox"`
-	CodexExtraArgs []string `json:"codex_extra_args"`
+	CodexBin     string `json:"codex_bin"`
+	CodexWorkDir string `json:"codex_workdir"`
+	CodexModel   string `json:"codex_model"`
+	CodexSandbox string `json:"codex_sandbox"`
 
 	Command []string `json:"command"`
 
-	OllamaURL       string `json:"ollama_url"`
-	OllamaModel     string `json:"ollama_model"`
-	OllamaKeepAlive string `json:"ollama_keep_alive"`
+	OllamaURL   string `json:"ollama_url"`
+	OllamaModel string `json:"ollama_model"`
 }
 
 type AgentFile struct {
@@ -47,13 +45,13 @@ type AgentRunner struct {
 
 func LoadAgentDefinitions(cfg Config) ([]AgentDefinition, string, error) {
 	if cfg.AgentsFile == "" {
-		return defaultAgentDefinitions(cfg), cfg.DefaultAgentName, nil
+		return defaultAgentDefinitions(cfg), defaultAgentName, nil
 	}
 
 	data, err := os.ReadFile(cfg.AgentsFile)
 	if err != nil {
-		if os.IsNotExist(err) && !cfg.AgentsFileExplicit {
-			return defaultAgentDefinitions(cfg), cfg.DefaultAgentName, nil
+		if os.IsNotExist(err) && cfg.AgentsFile == "agents.json" {
+			return defaultAgentDefinitions(cfg), defaultAgentName, nil
 		}
 		return nil, "", fmt.Errorf("read AGENTS_FILE: %w", err)
 	}
@@ -67,7 +65,7 @@ func LoadAgentDefinitions(cfg Config) ([]AgentDefinition, string, error) {
 	}
 	defaultName := strings.TrimSpace(file.Default)
 	if defaultName == "" {
-		defaultName = cfg.DefaultAgentName
+		defaultName = file.Agents[0].Name
 	}
 	return file.Agents, defaultName, nil
 }
@@ -154,10 +152,6 @@ func configForAgent(base Config, def AgentDefinition) (Config, error) {
 	if value := strings.TrimSpace(def.CodexSandbox); value != "" {
 		cfg.CodexSandbox = value
 	}
-	if def.CodexExtraArgs != nil {
-		cfg.CodexExtraArgs = append([]string(nil), def.CodexExtraArgs...)
-	}
-
 	if def.Command != nil {
 		cfg.Command = append([]string(nil), def.Command...)
 	}
@@ -168,10 +162,6 @@ func configForAgent(base Config, def AgentDefinition) (Config, error) {
 	if value := strings.TrimSpace(def.OllamaModel); value != "" {
 		cfg.OllamaModel = value
 	}
-	if value := strings.TrimSpace(def.OllamaKeepAlive); value != "" {
-		cfg.OllamaKeepAlive = value
-	}
-
 	if err := validateAgentConfig(cfg); err != nil {
 		return Config{}, err
 	}
@@ -179,12 +169,8 @@ func configForAgent(base Config, def AgentDefinition) (Config, error) {
 }
 
 func defaultAgentDefinitions(cfg Config) []AgentDefinition {
-	name := cfg.DefaultAgentName
-	if strings.TrimSpace(name) == "" {
-		name = "default"
-	}
 	return []AgentDefinition{{
-		Name:         name,
+		Name:         defaultAgentName,
 		Description:  "Default local agent",
 		Backend:      cfg.AgentBackend,
 		SystemPrompt: cfg.AgentSystemPrompt,

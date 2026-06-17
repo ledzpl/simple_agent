@@ -21,7 +21,7 @@ type DebateResult struct {
 }
 
 func (a *App) answerWithDebate(ctx context.Context, chatID int64, userMessage, memoryContext string) (DebateResult, error) {
-	participants := a.router.Participants(userMessage, a.cfg.DebateMaxAgents)
+	participants := a.router.Participants(userMessage, debateMaxAgents)
 	if len(participants) == 0 {
 		return DebateResult{}, fmt.Errorf("no debate participants are configured")
 	}
@@ -37,10 +37,7 @@ func (a *App) answerWithDebate(ctx context.Context, chatID int64, userMessage, m
 		}, nil
 	}
 
-	rounds := a.cfg.DebateRounds
-	if rounds <= 0 {
-		rounds = 1
-	}
+	rounds := debateRounds
 
 	var transcript []DebateTurn
 	for round := 1; round <= rounds; round++ {
@@ -75,7 +72,7 @@ func (a *App) answerWithDebate(ctx context.Context, chatID int64, userMessage, m
 }
 
 func (a *App) sendDebateTurn(ctx context.Context, chatID int64, turn DebateTurn, index, total int) {
-	if !a.cfg.DebateShowTranscript || a.bot == nil {
+	if a.bot == nil {
 		return
 	}
 	message := fmt.Sprintf("[debate %d/%d · round %d · %s]\n%s", index, total, turn.Round, turn.AgentName, turn.Content)

@@ -41,20 +41,27 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	state, err := NewStateStore(stateDir)
+	if err != nil {
+		return err
+	}
 
 	bot := NewTelegramBot(cfg.TelegramToken)
 	app := NewAppWithRouter(cfg, bot, router, memory)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if err := app.UseStateStore(ctx, state); err != nil {
+		return err
+	}
 
 	log.Printf("starting telegram-local-agent agents=%d default_agent=%s debate=%t allowed_chats=%d", len(router.Runners()), router.Default().Name, cfg.DebateEnabled, len(cfg.AllowedChatIDs))
 	if cfg.MemoryEnabled {
-		log.Printf("memory enabled dir=%s max_messages=%d max_chars=%d", cfg.MemoryDir, cfg.MemoryMaxMessages, cfg.MemoryMaxChars)
+		log.Printf("memory enabled dir=%s", cfg.MemoryDir)
 	} else {
 		log.Printf("memory disabled")
 	}
-	if len(cfg.AllowedChatIDs) == 0 && !cfg.AllowAllChats {
+	if len(cfg.AllowedChatIDs) == 0 {
 		log.Printf("TELEGRAM_ALLOWED_CHAT_IDS is empty; only /id and /start will be answered")
 	}
 
@@ -73,14 +80,15 @@ func checkConfig() error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("config ok\nagents: %d\ndefault_agent: %s\nbackend: %s\nallowed_chats: %d\nallowed_users: %d\nallow_groups: %t\nmax_active_jobs_per_chat: %d\n",
+	fmt.Printf("config ok\nagents: %d\ndefault_agent: %s\nbackend: %s\nallowed_chats: %d\nallowed_users: %d\nallow_groups: %t\ndebate: %t\nmemory: %t\n",
 		len(router.Runners()),
 		router.Default().Name,
 		cfg.AgentBackend,
 		len(cfg.AllowedChatIDs),
 		len(cfg.AllowedUserIDs),
 		cfg.AllowGroupChats,
-		cfg.MaxActiveJobsPerChat,
+		cfg.DebateEnabled,
+		cfg.MemoryEnabled,
 	)
 	return nil
 }

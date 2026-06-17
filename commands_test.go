@@ -60,10 +60,8 @@ func TestMemoryExportKeepsJSONLSeparateFromWarning(t *testing.T) {
 	defer server.Close()
 
 	store, err := NewMemoryStore(Config{
-		MemoryEnabled:     true,
-		MemoryDir:         t.TempDir(),
-		MemoryMaxMessages: 10,
-		MemoryMaxChars:    1000,
+		MemoryEnabled: true,
+		MemoryDir:     t.TempDir(),
 	})
 	if err != nil {
 		t.Fatalf("NewMemoryStore returned error: %v", err)
