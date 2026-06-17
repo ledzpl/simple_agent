@@ -1,0 +1,5 @@
+.env
+telegram-local-agent
+tmp/
+.telegram-memory/
+.*.swp
