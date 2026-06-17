@@ -18,18 +18,23 @@ func (a *App) remember(ctx context.Context, chatID int64, userMessage, assistant
 }
 
 func (a *App) rememberWithAgent(ctx context.Context, agent Agent, chatID int64, userMessage, assistantMessage string) error {
+	_, err := a.rememberWithAgentID(ctx, agent, chatID, userMessage, assistantMessage, "")
+	return err
+}
+
+func (a *App) rememberWithAgentID(ctx context.Context, agent Agent, chatID int64, userMessage, assistantMessage, memoryID string) (string, error) {
 	if a.memory == nil {
-		return nil
+		return "", nil
 	}
 
 	note, err := a.refinedMemoryNote(ctx, agent, userMessage, assistantMessage)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if note == "" {
-		return nil
+		return "", nil
 	}
-	return a.memory.AppendNote(ctx, chatID, note)
+	return a.memory.AppendNoteWithID(ctx, chatID, memoryID, note)
 }
 
 func (a *App) refinedMemoryNote(ctx context.Context, agent Agent, userMessage, assistantMessage string) (string, error) {

@@ -25,13 +25,73 @@ func TestAgentRouterRoutesByMatch(t *testing.T) {
 	if route.Runner.Name != "coder" {
 		t.Fatalf("expected coder route, got %#v", route)
 	}
-	if route.Reason == "" || !strings.Contains(route.Reason, "matched") {
-		t.Fatalf("expected match reason, got %q", route.Reason)
+	if route.Score <= 0 || route.Reason == "" || !strings.Contains(route.Reason, "matched") {
+		t.Fatalf("expected scored match reason, got score=%d reason=%q", route.Score, route.Reason)
 	}
 
 	route = router.Route("오늘 일정 정리해줘")
 	if route.Runner.Name != "general" || route.Reason != "default" {
 		t.Fatalf("expected default route, got %#v", route)
+	}
+}
+
+func TestAgentRouterNegativeMatchAndScores(t *testing.T) {
+	router := &AgentRouter{
+		defaultIndex: 0,
+		runners: []AgentRunner{
+			{Name: "general", Match: []string{"*"}, Backend: BackendCommand, Agent: &fakeAgent{}},
+			{Name: "engineer", Match: []string{"코드", "!법률"}, Examples: []string{"코드 법률 리스크를 검토해줘"}, Backend: BackendCommand, Agent: &fakeAgent{}},
+			{Name: "lawyer", Match: []string{"법률"}, Backend: BackendCommand, Agent: &fakeAgent{}},
+		},
+	}
+
+	route := router.Route("코드 법률 리스크를 봐줘")
+	if route.Runner.Name != "lawyer" {
+		t.Fatalf("negative match should block engineer and select lawyer, got %#v", route)
+	}
+
+	scores := router.Scores("코드 법률 리스크를 봐줘")
+	var engineer AgentParticipant
+	for _, score := range scores {
+		if score.Runner.Name == "engineer" {
+			engineer = score
+		}
+	}
+	if engineer.Score != 0 || !strings.Contains(engineer.Reason, "blocked") {
+		t.Fatalf("expected blocked engineer score, got %#v", engineer)
+	}
+}
+
+func TestAgentRouterBlockedDefaultDoesNotJoinParticipants(t *testing.T) {
+	router := &AgentRouter{
+		defaultIndex: 0,
+		runners: []AgentRunner{
+			{Name: "general", Match: []string{"*", "!비밀"}, Backend: BackendCommand, Agent: &fakeAgent{}},
+			{Name: "engineer", Match: []string{"코드"}, Backend: BackendCommand, Agent: &fakeAgent{}},
+		},
+	}
+
+	participants := router.Participants("비밀 코드 리뷰", 2)
+	if len(participants) != 1 || participants[0].Runner.Name != "engineer" {
+		t.Fatalf("blocked default should not join participants, got %#v", participants)
+	}
+}
+
+func TestAgentRouterExampleScore(t *testing.T) {
+	router := &AgentRouter{
+		defaultIndex: 0,
+		runners: []AgentRunner{
+			{Name: "general", Match: []string{"*"}, Backend: BackendCommand, Agent: &fakeAgent{}},
+			{Name: "teacher", Examples: []string{"재귀 함수를 쉽게 설명해줘"}, Backend: BackendCommand, Agent: &fakeAgent{}},
+		},
+	}
+
+	route := router.Route("재귀 함수를 설명해줘")
+	if route.Runner.Name != "teacher" {
+		t.Fatalf("expected example-based route to teacher, got %#v", route)
+	}
+	if !strings.Contains(route.Reason, "example") {
+		t.Fatalf("expected example reason, got %q", route.Reason)
 	}
 }
 

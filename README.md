@@ -46,6 +46,8 @@ General:
 - `DEBATE_ROUNDS`: discussion rounds before synthesis. Default: `1`.
 - `DEBATE_SHOW_TRANSCRIPT`: send each agent turn to Telegram. Default: `true`.
 - `TELEGRAM_ALLOW_ALL`: development-only escape hatch. Default: `false`.
+- `TELEGRAM_PARSE_MODE`: optional Telegram parse mode for outgoing messages: `Markdown`, `MarkdownV2`, or `HTML`. Default: plain text.
+- `TELEGRAM_ANSWER_ACTIONS`: attach inline buttons to agent answers for regenerate, recent memory deletion, and debate transcript viewing. Default: `true`.
 
 ## Role Agents
 
@@ -74,16 +76,19 @@ Each agent can set:
 - `name`: unique lowercase-friendly agent name.
 - `description`: shown by `/agents`.
 - `match`: keywords or phrases used for automatic routing. `*` marks a catch-all default-style agent but does not score.
+- `match` entries prefixed with `!` block that agent when the term appears, for example `!법률`.
+- `examples`: optional example user messages. Shared terms with the incoming message add a lower-priority routing score.
 - `system_prompt`: prompt used only for that agent.
 - `backend`: optional override. If omitted, the agent uses the global `AGENT_BACKEND`.
 - Backend-specific fields such as `codex_workdir`, `codex_sandbox`, `ollama_model`, or `command` only when that agent intentionally overrides the global backend behavior.
 
 Routing:
 
-- Automatic routing picks the agent whose `match` entry appears in the user message. Longer matching phrases win.
+- Automatic routing picks the highest scoring agent. Longer matching phrases, repeated matches, exact ASCII token matches, and optional `examples` can raise the score.
 - If nothing matches, the configured default agent is used.
 - Use `/agent <name> <message>` to force a specific agent.
 - Use `/agents` in Telegram to list configured agents and match rules.
+- Use `/route <message>` to inspect the selected agent, all candidate scores, and match reasons.
 
 ## Debate Mode
 
@@ -104,6 +109,16 @@ Use `/agent <name> <message>` for a single-agent answer, bypassing debate. Use `
 - `MEMORY_REFINE`: ask the configured backend to distill each successful exchange before storing it. Default: `true`.
 - `MEMORY_REFINE_MAX_CHARS`: max characters for one stored memory note. Default: `1000`.
 - `MEMORY_REFINE_TIMEOUT`: timeout for the memory distillation call. Default: `90s`.
+
+Memory commands:
+
+- `/memory`: show current memory status, storage path, byte count, and invalid JSONL line count.
+- `/memory show`: list valid stored memories with 1-based indexes.
+- `/memory delete <n>`: delete one stored memory by index.
+- `/memory export`: send valid memories as JSONL.
+- `/memory repair`: rewrite the memory file with only valid JSONL entries, removing corrupted lines.
+
+Memory loading skips corrupted JSONL lines instead of failing the whole request. New or rewritten memory notes redact common email addresses, Korean and US phone numbers, Telegram bot tokens, and OpenAI-style API keys before storage.
 
 Codex backend:
 
@@ -150,12 +165,16 @@ OLLAMA_MODEL=llama3.2
 - `/agents` lists configured agents and their match rules.
 - `/agent <name> <message>` sends a message through a specific agent.
 - `/debate <message>` forces a multi-agent discussion for one message.
+- `/route <message>` explains automatic routing scores without running an agent.
 - `/memory` shows stored memory status for the current chat.
+- `/memory show`, `/memory delete <n>`, `/memory export`, and `/memory repair` manage per-chat memory.
 - `/reset` deletes stored memory for the current chat.
 - Other text messages are forwarded to the configured local agent only when the chat id is allowed.
 - Non-text messages are rejected.
 - Long agent responses are split into Telegram-sized messages.
 - Successful user/assistant exchanges are distilled into compact memory notes, appended to a per-chat JSONL file, and included as context on later requests.
+- Agent answers can include inline buttons for “다시 생성”, “기억 삭제”, and debate transcript viewing when `TELEGRAM_ANSWER_ACTIONS=true`.
+- `TELEGRAM_PARSE_MODE` is retried as plain text if Telegram rejects the formatted message.
 
 ## Security Notes
 

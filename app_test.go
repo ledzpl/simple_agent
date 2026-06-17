@@ -116,3 +116,23 @@ func TestAppRememberReturnsRefineError(t *testing.T) {
 		t.Fatalf("expected refine memory error, got %v", err)
 	}
 }
+
+func TestAnswerActionsUsesMemoryID(t *testing.T) {
+	app := NewApp(Config{TelegramAnswerActions: true}, nil, &fakeAgent{}, &MemoryStore{})
+	markup := app.answerActions("memory-123", nil)
+	if markup == nil || len(markup.InlineKeyboard) != 1 {
+		t.Fatalf("expected one action row, got %#v", markup)
+	}
+	var found bool
+	for _, button := range markup.InlineKeyboard[0] {
+		if button.CallbackData == "memory_delete:memory-123" {
+			found = true
+		}
+		if button.CallbackData == "memory_delete_last" {
+			t.Fatalf("answer actions should not delete the latest memory: %#v", markup)
+		}
+	}
+	if !found {
+		t.Fatalf("answer actions missing memory-specific delete callback: %#v", markup)
+	}
+}

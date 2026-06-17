@@ -79,7 +79,7 @@ func (a *App) sendDebateTurn(ctx context.Context, chatID int64, turn DebateTurn,
 		return
 	}
 	message := fmt.Sprintf("[debate %d/%d · round %d · %s]\n%s", index, total, turn.Round, turn.AgentName, turn.Content)
-	if err := a.bot.SendMessage(ctx, chatID, message, 0); err != nil {
+	if err := a.sendMessage(ctx, chatID, message, 0); err != nil {
 		// Debate transcript visibility is useful but should not block the final answer.
 		log.Printf("send debate transcript failed chat_id=%d agent=%s: %v", chatID, turn.AgentName, err)
 	}

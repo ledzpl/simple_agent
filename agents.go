@@ -13,6 +13,7 @@ type AgentDefinition struct {
 	Name         string   `json:"name"`
 	Description  string   `json:"description"`
 	Match        []string `json:"match"`
+	Examples     []string `json:"examples"`
 	Backend      string   `json:"backend"`
 	SystemPrompt string   `json:"system_prompt"`
 	Timeout      string   `json:"timeout"`
@@ -39,6 +40,7 @@ type AgentRunner struct {
 	Name        string
 	Description string
 	Match       []string
+	Examples    []string
 	Backend     string
 	Agent       Agent
 }
@@ -101,6 +103,7 @@ func NewAgentRouter(cfg Config) (*AgentRouter, error) {
 			Name:        def.Name,
 			Description: strings.TrimSpace(def.Description),
 			Match:       normalizeMatches(def.Match),
+			Examples:    normalizeExamples(def.Examples),
 			Backend:     agentCfg.AgentBackend,
 			Agent:       agent,
 		}
@@ -210,5 +213,23 @@ func normalizeMatches(matches []string) []string {
 		out = append(out, match)
 	}
 	sort.Strings(out)
+	return out
+}
+
+func normalizeExamples(examples []string) []string {
+	out := make([]string, 0, len(examples))
+	seen := map[string]struct{}{}
+	for _, example := range examples {
+		example = strings.TrimSpace(example)
+		if example == "" {
+			continue
+		}
+		key := strings.ToLower(example)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, example)
+	}
 	return out
 }

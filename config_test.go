@@ -24,3 +24,19 @@ func TestParseAllowedChatIDsInvalid(t *testing.T) {
 		t.Fatal("expected invalid chat id error")
 	}
 }
+
+func TestNormalizeTelegramParseMode(t *testing.T) {
+	cases := map[string]string{
+		"":            "",
+		"markdown":    "Markdown",
+		"MarkdownV2":  "MarkdownV2",
+		"markdown_v2": "MarkdownV2",
+		"html":        "HTML",
+		"plain":       "",
+	}
+	for input, want := range cases {
+		if got := normalizeTelegramParseMode(input); got != want {
+			t.Fatalf("normalizeTelegramParseMode(%q) = %q, want %q", input, got, want)
+		}
+	}
+}

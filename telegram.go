@@ -30,16 +30,18 @@ func NewTelegramBot(token string) *TelegramBot {
 }
 
 type TelegramUpdate struct {
-	UpdateID int64            `json:"update_id"`
-	Message  *TelegramMessage `json:"message"`
+	UpdateID      int64                  `json:"update_id"`
+	Message       *TelegramMessage       `json:"message"`
+	CallbackQuery *TelegramCallbackQuery `json:"callback_query"`
 }
 
 type TelegramMessage struct {
-	MessageID int64         `json:"message_id"`
-	Date      int64         `json:"date"`
-	Text      string        `json:"text"`
-	Chat      TelegramChat  `json:"chat"`
-	From      *TelegramUser `json:"from"`
+	MessageID      int64            `json:"message_id"`
+	Date           int64            `json:"date"`
+	Text           string           `json:"text"`
+	Chat           TelegramChat     `json:"chat"`
+	From           *TelegramUser    `json:"from"`
+	ReplyToMessage *TelegramMessage `json:"reply_to_message"`
 }
 
 type TelegramChat struct {
@@ -58,6 +60,27 @@ type TelegramUser struct {
 	Username  string `json:"username"`
 }
 
+type TelegramCallbackQuery struct {
+	ID      string           `json:"id"`
+	From    *TelegramUser    `json:"from"`
+	Message *TelegramMessage `json:"message"`
+	Data    string           `json:"data"`
+}
+
+type SendMessageOptions struct {
+	ParseMode   string
+	ReplyMarkup *InlineKeyboardMarkup
+}
+
+type InlineKeyboardMarkup struct {
+	InlineKeyboard [][]InlineKeyboardButton `json:"inline_keyboard"`
+}
+
+type InlineKeyboardButton struct {
+	Text         string `json:"text"`
+	CallbackData string `json:"callback_data"`
+}
+
 type getUpdatesResponse struct {
 	OK          bool             `json:"ok"`
 	Result      []TelegramUpdate `json:"result"`
@@ -69,10 +92,16 @@ type apiResponse struct {
 	Description string `json:"description"`
 }
 
+type sendMessageResponse struct {
+	OK          bool            `json:"ok"`
+	Result      TelegramMessage `json:"result"`
+	Description string          `json:"description"`
+}
+
 func (b *TelegramBot) GetUpdates(ctx context.Context, offset int64) ([]TelegramUpdate, error) {
 	values := url.Values{}
 	values.Set("timeout", "50")
-	values.Set("allowed_updates", `["message"]`)
+	values.Set("allowed_updates", `["message","callback_query"]`)
 	if offset > 0 {
 		values.Set("offset", strconv.FormatInt(offset, 10))
 	}
@@ -107,20 +136,55 @@ func (b *TelegramBot) GetUpdates(ctx context.Context, offset int64) ([]TelegramU
 }
 
 func (b *TelegramBot) SendMessage(ctx context.Context, chatID int64, text string, replyTo int64) error {
-	for _, chunk := range splitTelegramText(text) {
+	_, err := b.SendMessageWithOptions(ctx, chatID, text, replyTo, SendMessageOptions{})
+	return err
+}
+
+func (b *TelegramBot) SendMessageWithOptions(ctx context.Context, chatID int64, text string, replyTo int64, options SendMessageOptions) ([]TelegramMessage, error) {
+	chunks := splitTelegramText(text)
+	sent := make([]TelegramMessage, 0, len(chunks))
+	originalReplyTo := replyTo
+	for i, chunk := range chunks {
 		payload := map[string]any{
 			"chat_id": chatID,
 			"text":    chunk,
 		}
-		if replyTo > 0 {
-			payload["reply_parameters"] = map[string]any{"message_id": replyTo}
+		if options.ParseMode != "" {
+			payload["parse_mode"] = options.ParseMode
 		}
-		if err := b.postJSON(ctx, "/sendMessage", payload); err != nil {
-			return err
+		if replyTo > 0 || (options.ReplyMarkup != nil && i == len(chunks)-1 && originalReplyTo > 0) {
+			messageID := replyTo
+			if messageID == 0 {
+				messageID = originalReplyTo
+			}
+			payload["reply_parameters"] = map[string]any{"message_id": messageID}
 		}
+		if options.ReplyMarkup != nil && i == len(chunks)-1 {
+			payload["reply_markup"] = options.ReplyMarkup
+		}
+		message, err := b.sendMessagePayload(ctx, payload)
+		if err != nil && options.ParseMode != "" {
+			delete(payload, "parse_mode")
+			message, err = b.sendMessagePayload(ctx, payload)
+		}
+		if err != nil {
+			return sent, err
+		}
+		sent = append(sent, message)
 		replyTo = 0
 	}
-	return nil
+	return sent, nil
+}
+
+func (b *TelegramBot) sendMessagePayload(ctx context.Context, payload map[string]any) (TelegramMessage, error) {
+	var decoded sendMessageResponse
+	if err := b.postJSONDecode(ctx, "/sendMessage", payload, &decoded); err != nil {
+		return TelegramMessage{}, err
+	}
+	if !decoded.OK {
+		return TelegramMessage{}, fmt.Errorf("telegram sendMessage failed: %s", decoded.Description)
+	}
+	return decoded.Result, nil
 }
 
 func (b *TelegramBot) SendChatAction(ctx context.Context, chatID int64, action string) error {
@@ -130,7 +194,35 @@ func (b *TelegramBot) SendChatAction(ctx context.Context, chatID int64, action s
 	})
 }
 
+func (b *TelegramBot) AnswerCallbackQuery(ctx context.Context, callbackID, text string) error {
+	payload := map[string]any{
+		"callback_query_id": callbackID,
+	}
+	if strings.TrimSpace(text) != "" {
+		payload["text"] = text
+	}
+	return b.postJSON(ctx, "/answerCallbackQuery", payload)
+}
+
+func (b *TelegramBot) DeleteMessage(ctx context.Context, chatID, messageID int64) error {
+	return b.postJSON(ctx, "/deleteMessage", map[string]any{
+		"chat_id":    chatID,
+		"message_id": messageID,
+	})
+}
+
 func (b *TelegramBot) postJSON(ctx context.Context, path string, payload map[string]any) error {
+	var decoded apiResponse
+	if err := b.postJSONDecode(ctx, path, payload, &decoded); err != nil {
+		return err
+	}
+	if !decoded.OK {
+		return fmt.Errorf("telegram %s failed: %s", strings.TrimPrefix(path, "/"), decoded.Description)
+	}
+	return nil
+}
+
+func (b *TelegramBot) postJSONDecode(ctx context.Context, path string, payload map[string]any, out any) error {
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return err
@@ -155,13 +247,8 @@ func (b *TelegramBot) postJSON(ctx context.Context, path string, payload map[str
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("telegram %s status %d: %s", strings.TrimPrefix(path, "/"), resp.StatusCode, trimBody(body))
 	}
-
-	var decoded apiResponse
-	if err := json.Unmarshal(body, &decoded); err != nil {
+	if err := json.Unmarshal(body, out); err != nil {
 		return fmt.Errorf("decode telegram %s: %w", strings.TrimPrefix(path, "/"), err)
-	}
-	if !decoded.OK {
-		return fmt.Errorf("telegram %s failed: %s", strings.TrimPrefix(path, "/"), decoded.Description)
 	}
 	return nil
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 )
@@ -97,5 +98,123 @@ func TestMemoryRefinePromptAndNormalize(t *testing.T) {
 	}
 	if got := normalizeMemoryNote("가나다라마", 3); got != "가나다" {
 		t.Fatalf("max char truncation mismatch: %q", got)
+	}
+}
+
+func TestMemoryLoadSkipsCorruptLinesAndRepair(t *testing.T) {
+	store, err := NewMemoryStore(Config{
+		MemoryEnabled:     true,
+		MemoryDir:         t.TempDir(),
+		MemoryMaxMessages: 10,
+		MemoryMaxChars:    1000,
+	})
+	if err != nil {
+		t.Fatalf("NewMemoryStore returned error: %v", err)
+	}
+
+	data := `{"role":"memory","content":"valid","created_at":"2026-06-17T00:00:00Z"}
+not json
+{"role":"memory","content":"also valid","created_at":"2026-06-17T00:00:01Z"}
+`
+	if err := os.WriteFile(store.path(123), []byte(data), 0600); err != nil {
+		t.Fatalf("write memory file: %v", err)
+	}
+
+	messages, issues, err := store.LoadDetailed(context.Background(), 123)
+	if err != nil {
+		t.Fatalf("LoadDetailed returned error: %v", err)
+	}
+	if len(messages) != 2 {
+		t.Fatalf("expected 2 valid messages, got %#v", messages)
+	}
+	if len(issues) != 1 || issues[0].Line != 2 {
+		t.Fatalf("expected one issue on line 2, got %#v", issues)
+	}
+
+	stats, err := store.Repair(context.Background(), 123)
+	if err != nil {
+		t.Fatalf("Repair returned error: %v", err)
+	}
+	if stats.InvalidLines != 1 || stats.Messages != 2 {
+		t.Fatalf("unexpected repair stats: %#v", stats)
+	}
+	_, issues, err = store.LoadDetailed(context.Background(), 123)
+	if err != nil {
+		t.Fatalf("LoadDetailed after repair returned error: %v", err)
+	}
+	if len(issues) != 0 {
+		t.Fatalf("repair should remove invalid lines, got %#v", issues)
+	}
+}
+
+func TestMemoryDeleteExportAndRedact(t *testing.T) {
+	store, err := NewMemoryStore(Config{
+		MemoryEnabled:     true,
+		MemoryDir:         t.TempDir(),
+		MemoryMaxMessages: 10,
+		MemoryMaxChars:    1000,
+	})
+	if err != nil {
+		t.Fatalf("NewMemoryStore returned error: %v", err)
+	}
+
+	ctx := context.Background()
+	if err := store.AppendNote(ctx, 123, "email watson@example.com phone 010-1234-5678 token 123456:abcdefghijklmnopqrstuvwxyz"); err != nil {
+		t.Fatalf("AppendNote returned error: %v", err)
+	}
+	if err := store.AppendNote(ctx, 123, "keep this"); err != nil {
+		t.Fatalf("AppendNote returned error: %v", err)
+	}
+	if err := store.Delete(123, 2); err != nil {
+		t.Fatalf("Delete returned error: %v", err)
+	}
+
+	exported, issues, err := store.ExportJSONL(ctx, 123)
+	if err != nil {
+		t.Fatalf("ExportJSONL returned error: %v", err)
+	}
+	if len(issues) != 0 {
+		t.Fatalf("unexpected export issues: %#v", issues)
+	}
+	for _, forbidden := range []string{"watson@example.com", "010-1234-5678", "123456:abcdefghijklmnopqrstuvwxyz", "keep this"} {
+		if strings.Contains(exported, forbidden) {
+			t.Fatalf("export leaked or retained %q:\n%s", forbidden, exported)
+		}
+	}
+	for _, want := range []string{"[redacted-email]", "[redacted-phone]", "[redacted-token]"} {
+		if !strings.Contains(exported, want) {
+			t.Fatalf("export missing redaction %q:\n%s", want, exported)
+		}
+	}
+}
+
+func TestMemoryDeleteByID(t *testing.T) {
+	store, err := NewMemoryStore(Config{
+		MemoryEnabled:     true,
+		MemoryDir:         t.TempDir(),
+		MemoryMaxMessages: 10,
+		MemoryMaxChars:    1000,
+	})
+	if err != nil {
+		t.Fatalf("NewMemoryStore returned error: %v", err)
+	}
+
+	ctx := context.Background()
+	if _, err := store.AppendNoteWithID(ctx, 123, "answer-a", "first answer memory"); err != nil {
+		t.Fatalf("AppendNoteWithID returned error: %v", err)
+	}
+	if _, err := store.AppendNoteWithID(ctx, 123, "answer-b", "second answer memory"); err != nil {
+		t.Fatalf("AppendNoteWithID returned error: %v", err)
+	}
+
+	if err := store.DeleteByID(123, "answer-a"); err != nil {
+		t.Fatalf("DeleteByID returned error: %v", err)
+	}
+	messages, err := store.Load(ctx, 123)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if len(messages) != 1 || messages[0].ID != "answer-b" || messages[0].Content != "second answer memory" {
+		t.Fatalf("DeleteByID removed the wrong memory: %#v", messages)
 	}
 }
