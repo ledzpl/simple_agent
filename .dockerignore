@@ -1,0 +1,13 @@
+.git/
+.github/
+.telegram-memory/
+tmp/
+
+.env
+.env.*
+!.env.example
+
+agents.json
+telegram-local-agent
+TODO.md
+.DS_Store

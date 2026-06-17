@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.example.telegram-local-agent</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/telegram-local-agent</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/usr/local/var/telegram-local-agent</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>ENV_FILE</key>
+    <string>/usr/local/etc/telegram-local-agent.env</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/usr/local/var/log/telegram-local-agent.log</string>
+  <key>StandardErrorPath</key>
+  <string>/usr/local/var/log/telegram-local-agent.err.log</string>
+</dict>
+</plist>

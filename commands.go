@@ -20,6 +20,10 @@ var commandHelps = []commandHelp{
 	{Usage: "/agent <name> <message>", Description: "특정 agent로 단독 응답 받기"},
 	{Usage: "/debate <message>", Description: "여러 agent 토론 후 최종 답변 받기"},
 	{Usage: "/route <message>", Description: "메시지가 어떤 agent로 라우팅되는지 점수와 이유 확인"},
+	{Usage: "/status", Description: "현재 chat의 실행/대기/최근 작업 상태 확인"},
+	{Usage: "/cancel [job|latest|all]", Description: "실행 중이거나 대기 중인 작업 취소"},
+	{Usage: "/retry [job|last]", Description: "최근 작업 또는 지정 작업 다시 실행"},
+	{Usage: "/confirm <id>", Description: "위험 작업 확인 후 실행"},
 	{Usage: "/memory", Description: "현재 chat의 저장된 기억 상태 확인"},
 	{Usage: "/memory show", Description: "현재 chat의 저장된 기억 목록 보기"},
 	{Usage: "/memory delete <n>", Description: "n번째 저장 기억 삭제"},
@@ -29,8 +33,8 @@ var commandHelps = []commandHelp{
 }
 
 func (a *App) handleAgents(ctx context.Context, msg TelegramMessage) {
-	if !a.isAllowed(msg.Chat.ID) {
-		_ = a.sendMessage(ctx, msg.Chat.ID, denyMessage(msg.Chat.ID), msg.MessageID)
+	if err := a.authorizeMessage(msg); err != nil {
+		_ = a.sendMessage(ctx, msg.Chat.ID, err.Error(), msg.MessageID)
 		return
 	}
 
@@ -54,8 +58,8 @@ func (a *App) handleAgents(ctx context.Context, msg TelegramMessage) {
 }
 
 func (a *App) handleMemory(ctx context.Context, msg TelegramMessage) {
-	if !a.isAllowed(msg.Chat.ID) {
-		_ = a.sendMessage(ctx, msg.Chat.ID, denyMessage(msg.Chat.ID), msg.MessageID)
+	if err := a.authorizeMessage(msg); err != nil {
+		_ = a.sendMessage(ctx, msg.Chat.ID, err.Error(), msg.MessageID)
 		return
 	}
 	if a.memory == nil {
@@ -170,8 +174,8 @@ func (a *App) handleMemoryRepair(ctx context.Context, msg TelegramMessage) {
 }
 
 func (a *App) handleRoute(ctx context.Context, msg TelegramMessage) {
-	if !a.isAllowed(msg.Chat.ID) {
-		_ = a.sendMessage(ctx, msg.Chat.ID, denyMessage(msg.Chat.ID), msg.MessageID)
+	if err := a.authorizeMessage(msg); err != nil {
+		_ = a.sendMessage(ctx, msg.Chat.ID, err.Error(), msg.MessageID)
 		return
 	}
 	message, ok := parseMessageCommand(msg.Text, "/route")
@@ -195,8 +199,8 @@ func (a *App) handleRoute(ctx context.Context, msg TelegramMessage) {
 }
 
 func (a *App) handleReset(ctx context.Context, msg TelegramMessage) {
-	if !a.isAllowed(msg.Chat.ID) {
-		_ = a.sendMessage(ctx, msg.Chat.ID, denyMessage(msg.Chat.ID), msg.MessageID)
+	if err := a.authorizeMessage(msg); err != nil {
+		_ = a.sendMessage(ctx, msg.Chat.ID, err.Error(), msg.MessageID)
 		return
 	}
 	if a.memory == nil {
@@ -210,11 +214,82 @@ func (a *App) handleReset(ctx context.Context, msg TelegramMessage) {
 	_ = a.sendMessage(ctx, msg.Chat.ID, "이 채팅의 저장된 대화 기억을 삭제했습니다.", msg.MessageID)
 }
 
-func (a *App) identityMessage(chatID int64) string {
-	if a.isAllowed(chatID) {
-		return fmt.Sprintf("연결되었습니다.\nchat id: %d\ndefault agent: %s\nagents: %d", chatID, a.router.Default().Name, len(a.router.Runners()))
+func (a *App) handleStatus(ctx context.Context, msg TelegramMessage) {
+	if err := a.authorizeMessage(msg); err != nil {
+		_ = a.sendMessage(ctx, msg.Chat.ID, err.Error(), msg.MessageID)
+		return
 	}
-	return fmt.Sprintf("chat id: %d\n\n이 채팅에서 로컬 에이전트를 실행하려면 서버의 TELEGRAM_ALLOWED_CHAT_IDS에 이 값을 추가하세요.", chatID)
+	_ = a.sendMessage(ctx, msg.Chat.ID, formatJobStatus(a.jobs.Status(msg.Chat.ID)), msg.MessageID)
+}
+
+func (a *App) handleCancel(ctx context.Context, msg TelegramMessage) {
+	if err := a.authorizeMessage(msg); err != nil {
+		_ = a.sendMessage(ctx, msg.Chat.ID, err.Error(), msg.MessageID)
+		return
+	}
+	selector := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(msg.Text), strings.Fields(msg.Text)[0]))
+	canceled, err := a.jobs.Cancel(msg.Chat.ID, selector)
+	if err != nil {
+		_ = a.sendMessage(ctx, msg.Chat.ID, "취소할 작업을 찾지 못했습니다.\n\n"+err.Error(), msg.MessageID)
+		return
+	}
+	_ = a.sendMessage(ctx, msg.Chat.ID, fmt.Sprintf("작업 %d개를 취소했습니다.\n%s", len(canceled), formatJobStatus(canceled)), msg.MessageID)
+}
+
+func (a *App) handleRetry(ctx context.Context, msg TelegramMessage) {
+	if err := a.authorizeMessage(msg); err != nil {
+		_ = a.sendMessage(ctx, msg.Chat.ID, err.Error(), msg.MessageID)
+		return
+	}
+	selector := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(msg.Text), strings.Fields(msg.Text)[0]))
+	source, err := a.jobs.RetrySource(msg.Chat.ID, selector)
+	if err != nil {
+		_ = a.sendMessage(ctx, msg.Chat.ID, "재시도할 작업을 찾지 못했습니다.\n\n"+err.Error(), msg.MessageID)
+		return
+	}
+	if a.needsDangerConfirmation(source.Message) {
+		retryMessage := msg
+		retryMessage.Text = source.Message
+		confirmation := a.confirmations.Add(retryMessage, source.Message, source.ForceDebate)
+		_ = a.sendMessage(ctx, msg.Chat.ID, fmt.Sprintf("이전 작업 요청이 위험할 수 있습니다. 다시 실행하려면 다음 명령을 보내세요.\n/confirm %s", confirmation.ID), msg.MessageID)
+		return
+	}
+	snapshot := a.enqueueAgentJob(ctx, msg, source.Message, source.ForceDebate)
+	_ = a.sendMessage(ctx, msg.Chat.ID, fmt.Sprintf("작업을 다시 등록했습니다.\n%s", formatJobLine(snapshot)), msg.MessageID)
+}
+
+func (a *App) handleConfirm(ctx context.Context, msg TelegramMessage) {
+	if err := a.authorizeMessage(msg); err != nil {
+		_ = a.sendMessage(ctx, msg.Chat.ID, err.Error(), msg.MessageID)
+		return
+	}
+	id, ok := parseMessageCommand(msg.Text, "/confirm")
+	if !ok {
+		_ = a.sendMessage(ctx, msg.Chat.ID, "사용법: /confirm <id>", msg.MessageID)
+		return
+	}
+	userID := int64(0)
+	if msg.From != nil {
+		userID = msg.From.ID
+	}
+	confirmation, ok := a.confirmations.Take(strings.TrimSpace(id), msg.Chat.ID, userID)
+	if !ok {
+		_ = a.sendMessage(ctx, msg.Chat.ID, "확인할 작업을 찾지 못했거나 만료되었습니다.", msg.MessageID)
+		return
+	}
+	confirmation.Message.MessageID = msg.MessageID
+	a.enqueueAgentJob(ctx, confirmation.Message, confirmation.Text, confirmation.ForceDebate)
+}
+
+func (a *App) identityMessage(msg TelegramMessage) string {
+	userID := int64(0)
+	if msg.From != nil {
+		userID = msg.From.ID
+	}
+	if err := a.authorizeMessage(msg); err == nil {
+		return fmt.Sprintf("연결되었습니다.\nchat id: %d\nuser id: %d\nchat type: %s\ndefault agent: %s\nagents: %d", msg.Chat.ID, userID, emptyDefault(msg.Chat.Type, "unknown"), a.router.Default().Name, len(a.router.Runners()))
+	}
+	return fmt.Sprintf("chat id: %d\nuser id: %d\nchat type: %s\n\n이 채팅에서 로컬 에이전트를 실행하려면 서버 allowlist 설정을 확인하세요.", msg.Chat.ID, userID, emptyDefault(msg.Chat.Type, "unknown"))
 }
 
 func helpMessage() string {
@@ -233,6 +308,13 @@ func helpMessage() string {
 
 func denyMessage(chatID int64) string {
 	return fmt.Sprintf("이 채팅은 허용 목록에 없습니다.\nchat id: %d\n\n서버의 TELEGRAM_ALLOWED_CHAT_IDS에 이 값을 추가한 뒤 다시 실행하세요.", chatID)
+}
+
+func emptyDefault(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
 }
 
 func parseMemoryCommand(text string) (string, string) {

@@ -19,9 +19,14 @@ const (
 type Config struct {
 	TelegramToken         string
 	AllowedChatIDs        map[int64]struct{}
+	AllowedUserIDs        map[int64]struct{}
 	AllowAllChats         bool
+	AllowGroupChats       bool
 	TelegramParseMode     string
 	TelegramAnswerActions bool
+	MaxActiveJobsPerChat  int
+	JobProgressInterval   time.Duration
+	ConfirmDangerous      bool
 	AgentBackend          string
 	AgentTimeout          time.Duration
 	AgentSystemPrompt     string
@@ -46,7 +51,8 @@ type Config struct {
 	CodexSandbox   string
 	CodexExtraArgs []string
 
-	Command []string
+	Command          []string
+	CommandAllowlist map[string]struct{}
 
 	OllamaURL       string
 	OllamaModel     string
@@ -54,15 +60,19 @@ type Config struct {
 }
 
 func LoadConfig() (Config, error) {
-	if err := LoadDotEnv(".env"); err != nil {
+	if err := LoadDotEnv(envDefault("ENV_FILE", ".env")); err != nil {
 		return Config{}, err
 	}
 
 	cfg := Config{
 		TelegramToken:         strings.TrimSpace(os.Getenv("TELEGRAM_BOT_TOKEN")),
 		AllowAllChats:         envBool("TELEGRAM_ALLOW_ALL", false),
+		AllowGroupChats:       envBool("TELEGRAM_ALLOW_GROUPS", false),
 		TelegramParseMode:     normalizeTelegramParseMode(os.Getenv("TELEGRAM_PARSE_MODE")),
 		TelegramAnswerActions: envBool("TELEGRAM_ANSWER_ACTIONS", true),
+		MaxActiveJobsPerChat:  envInt("TELEGRAM_MAX_ACTIVE_JOBS_PER_CHAT", 1),
+		JobProgressInterval:   envDuration("TELEGRAM_JOB_PROGRESS_INTERVAL", 60*time.Second),
+		ConfirmDangerous:      envBool("TELEGRAM_CONFIRM_DANGEROUS", true),
 		AgentBackend:          envDefault("AGENT_BACKEND", BackendCodex),
 		AgentTimeout:          envDuration("AGENT_TIMEOUT", 5*time.Minute),
 		AgentSystemPrompt:     envDefault("AGENT_SYSTEM_PROMPT", defaultSystemPrompt()),
@@ -98,6 +108,17 @@ func LoadConfig() (Config, error) {
 		return Config{}, err
 	}
 	cfg.AllowedChatIDs = chatIDs
+
+	userIDs, err := parseAllowedUserIDs(os.Getenv("TELEGRAM_ALLOWED_USER_IDS"))
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.AllowedUserIDs = userIDs
+
+	cfg.CommandAllowlist, err = parseCommandAllowlist(os.Getenv("LOCAL_AGENT_COMMAND_ALLOWLIST"))
+	if err != nil {
+		return Config{}, err
+	}
 
 	if cfg.CodexWorkDir != "" {
 		abs, err := filepath.Abs(cfg.CodexWorkDir)
@@ -157,6 +178,9 @@ func validateAgentConfig(cfg Config) error {
 	case BackendCommand:
 		if len(cfg.Command) == 0 {
 			return errors.New("LOCAL_AGENT_COMMAND or agent command is required when backend is command")
+		}
+		if err := validateCommandAllowed(cfg.Command, cfg.CommandAllowlist); err != nil {
+			return err
 		}
 	case BackendOllama:
 		if strings.TrimSpace(cfg.OllamaModel) == "" {
@@ -250,6 +274,14 @@ func envInt(key string, fallback int) int {
 }
 
 func parseAllowedChatIDs(raw string) (map[int64]struct{}, error) {
+	return parseInt64Set(raw, "TELEGRAM_ALLOWED_CHAT_IDS")
+}
+
+func parseAllowedUserIDs(raw string) (map[int64]struct{}, error) {
+	return parseInt64Set(raw, "TELEGRAM_ALLOWED_USER_IDS")
+}
+
+func parseInt64Set(raw, key string) (map[int64]struct{}, error) {
 	ids := map[int64]struct{}{}
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -262,9 +294,43 @@ func parseAllowedChatIDs(raw string) (map[int64]struct{}, error) {
 		}
 		id, err := strconv.ParseInt(part, 10, 64)
 		if err != nil {
-			return nil, fmt.Errorf("invalid TELEGRAM_ALLOWED_CHAT_IDS value %q: %w", part, err)
+			return nil, fmt.Errorf("invalid %s value %q: %w", key, part, err)
 		}
 		ids[id] = struct{}{}
 	}
 	return ids, nil
+}
+
+func parseCommandAllowlist(raw string) (map[string]struct{}, error) {
+	allowed := map[string]struct{}{}
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return allowed, nil
+	}
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		allowed[part] = struct{}{}
+		allowed[filepath.Base(part)] = struct{}{}
+	}
+	return allowed, nil
+}
+
+func validateCommandAllowed(command []string, allowlist map[string]struct{}) error {
+	if len(allowlist) == 0 || len(command) == 0 {
+		return nil
+	}
+	executable := strings.TrimSpace(command[0])
+	if executable == "" {
+		return errors.New("command executable is empty")
+	}
+	if _, ok := allowlist[executable]; ok {
+		return nil
+	}
+	if _, ok := allowlist[filepath.Base(executable)]; ok {
+		return nil
+	}
+	return fmt.Errorf("command executable %q is not in LOCAL_AGENT_COMMAND_ALLOWLIST", executable)
 }

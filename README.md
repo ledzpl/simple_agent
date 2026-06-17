@@ -19,13 +19,19 @@ go build ./...
 cp .env.example .env
 ```
 
-4. Start once with only `TELEGRAM_BOT_TOKEN` set, then send `/id` to the bot.
+4. Check the configuration.
+
+```sh
+go run . --check-config
+```
+
+5. Start once with only `TELEGRAM_BOT_TOKEN` set, then send `/id` to the bot.
 
 ```sh
 go run .
 ```
 
-5. Put the returned chat id into `TELEGRAM_ALLOWED_CHAT_IDS`, restart the app, and send a normal message to the bot.
+6. Put the returned chat id into `TELEGRAM_ALLOWED_CHAT_IDS`, optionally put the returned user id into `TELEGRAM_ALLOWED_USER_IDS`, restart the app, and send a normal message to the bot.
 
 ## Configuration
 
@@ -33,9 +39,11 @@ Required:
 
 - `TELEGRAM_BOT_TOKEN`: Telegram bot token from `@BotFather`.
 - `TELEGRAM_ALLOWED_CHAT_IDS`: comma-separated Telegram chat ids allowed to run the local agent.
+- `TELEGRAM_ALLOWED_USER_IDS`: optional comma-separated Telegram user ids allowed to run the local agent.
 
 General:
 
+- `ENV_FILE`: dotenv file path loaded at startup. Default: `.env`.
 - `AGENT_BACKEND`: `codex`, `ollama`, or `command`. Default: `codex`.
 - `AGENT_TIMEOUT`: local agent timeout. Default: `5m`.
 - `AGENT_SYSTEM_PROMPT`: optional instruction prepended to every Telegram message.
@@ -46,8 +54,12 @@ General:
 - `DEBATE_ROUNDS`: discussion rounds before synthesis. Default: `1`.
 - `DEBATE_SHOW_TRANSCRIPT`: send each agent turn to Telegram. Default: `true`.
 - `TELEGRAM_ALLOW_ALL`: development-only escape hatch. Default: `false`.
+- `TELEGRAM_ALLOW_GROUPS`: allow group/supergroup chats after chat allowlist checks. Default: `false`.
 - `TELEGRAM_PARSE_MODE`: optional Telegram parse mode for outgoing messages: `Markdown`, `MarkdownV2`, or `HTML`. Default: plain text.
 - `TELEGRAM_ANSWER_ACTIONS`: attach inline buttons to agent answers for regenerate, recent memory deletion, and debate transcript viewing. Default: `true`.
+- `TELEGRAM_MAX_ACTIVE_JOBS_PER_CHAT`: concurrent agent jobs per chat. Default: `1`.
+- `TELEGRAM_JOB_PROGRESS_INTERVAL`: progress message interval for running jobs. Default: `60s`.
+- `TELEGRAM_CONFIRM_DANGEROUS`: require `/confirm <id>` for messages that look like destructive command requests. Default: `true`.
 
 ## Role Agents
 
@@ -131,6 +143,7 @@ Codex backend:
 Command backend:
 
 - `LOCAL_AGENT_COMMAND`: command that receives the prompt on stdin and writes the answer to stdout.
+- `LOCAL_AGENT_COMMAND_ALLOWLIST`: optional comma-separated executable allowlist for `AGENT_BACKEND=command` and per-agent command overrides. Entries match either exact path or basename.
 
 Example:
 
@@ -166,22 +179,52 @@ OLLAMA_MODEL=llama3.2
 - `/agent <name> <message>` sends a message through a specific agent.
 - `/debate <message>` forces a multi-agent discussion for one message.
 - `/route <message>` explains automatic routing scores without running an agent.
+- `/status` shows running, queued, and recent jobs for the current chat.
+- `/cancel [job|latest|all]` cancels queued or running jobs for the current chat.
+- `/retry [job|last]` re-enqueues a recent job.
+- `/confirm <id>` runs a request that was held for destructive-command confirmation.
 - `/memory` shows stored memory status for the current chat.
 - `/memory show`, `/memory delete <n>`, `/memory export`, and `/memory repair` manage per-chat memory.
 - `/reset` deletes stored memory for the current chat.
-- Other text messages are forwarded to the configured local agent only when the chat id is allowed.
+- Other text messages are queued for the configured local agent only when the chat, chat type, and optional user id are allowed.
 - Non-text messages are rejected.
 - Long agent responses are split into Telegram-sized messages.
 - Successful user/assistant exchanges are distilled into compact memory notes, appended to a per-chat JSONL file, and included as context on later requests.
 - Agent answers can include inline buttons for “다시 생성”, “기억 삭제”, and debate transcript viewing when `TELEGRAM_ANSWER_ACTIONS=true`.
 - `TELEGRAM_PARSE_MODE` is retried as plain text if Telegram rejects the formatted message.
+- Common secrets and personal contact fields are redacted before sending bot messages and before writing memory notes.
 
 ## Security Notes
 
 Treat this as remote access to a local agent. Keep these defaults unless you have a reason to loosen them:
 
 - Use `TELEGRAM_ALLOWED_CHAT_IDS`.
+- Use `TELEGRAM_ALLOWED_USER_IDS` when the bot is in a chat where more than one Telegram user can send messages.
+- Keep `TELEGRAM_ALLOW_GROUPS=false` unless you intentionally run the bot in a group/supergroup.
 - Keep `CODEX_SANDBOX=read-only` for Codex.
 - Avoid `TELEGRAM_ALLOW_ALL=true` outside a throwaway test.
+- Keep `TELEGRAM_CONFIRM_DANGEROUS=true` so destructive-looking requests require an explicit `/confirm <id>`.
+- Set `LOCAL_AGENT_COMMAND_ALLOWLIST` when using `AGENT_BACKEND=command`.
 - The memory directory stores Telegram messages and agent replies in plain JSONL. Keep it out of Git and protect the host account.
 - Be careful with `AGENT_BACKEND=command`; it intentionally runs the configured local program.
+
+## Operations
+
+Validate runtime configuration before starting:
+
+```sh
+telegram-local-agent --check-config
+```
+
+Build a container image:
+
+```sh
+docker build -t telegram-local-agent .
+```
+
+Operational samples are in `deploy/`:
+
+- `deploy/telegram-local-agent.service`: systemd service with restricted filesystem access.
+- `deploy/com.example.telegram-local-agent.plist`: launchd plist for macOS.
+
+GitHub Actions in `.github/workflows/ci.yml` runs `go test`, `go vet`, and `go build`. Version tags matching `v*` build Linux and macOS release binaries.

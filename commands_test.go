@@ -93,3 +93,42 @@ not json
 		t.Fatalf("warning message mismatch: %#v", texts)
 	}
 }
+
+func TestIDCommandPreservesTelegramIDs(t *testing.T) {
+	var text string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/sendMessage" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode payload: %v", err)
+		}
+		text, _ = payload["text"].(string)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok": true}`))
+	}))
+	defer server.Close()
+
+	chatID := int64(1234567890)
+	userID := int64(1000000000)
+	app := NewApp(
+		Config{AllowedChatIDs: map[int64]struct{}{chatID: {}}},
+		&TelegramBot{baseURL: server.URL, client: server.Client()},
+		&fakeAgent{},
+		nil,
+	)
+	app.handleMessage(context.Background(), TelegramMessage{
+		MessageID: 7,
+		Text:      "/id",
+		Chat:      TelegramChat{ID: chatID, Type: "private"},
+		From:      &TelegramUser{ID: userID},
+	})
+
+	if !strings.Contains(text, "chat id: 1234567890") || !strings.Contains(text, "user id: 1000000000") {
+		t.Fatalf("/id should preserve Telegram IDs, got %q", text)
+	}
+	if strings.Contains(text, "redacted") {
+		t.Fatalf("/id should not redact Telegram IDs, got %q", text)
+	}
+}

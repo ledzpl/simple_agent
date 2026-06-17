@@ -17,6 +17,16 @@ func main() {
 }
 
 func run() error {
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "--check-config":
+			return checkConfig()
+		case "-h", "--help":
+			fmt.Println("usage: telegram-local-agent [--check-config]")
+			return nil
+		}
+	}
+
 	cfg, err := LoadConfig()
 	if err != nil {
 		return err
@@ -51,5 +61,26 @@ func run() error {
 	if err := app.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		return fmt.Errorf("run app: %w", err)
 	}
+	return nil
+}
+
+func checkConfig() error {
+	cfg, err := LoadConfig()
+	if err != nil {
+		return err
+	}
+	router, err := NewAgentRouter(cfg)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("config ok\nagents: %d\ndefault_agent: %s\nbackend: %s\nallowed_chats: %d\nallowed_users: %d\nallow_groups: %t\nmax_active_jobs_per_chat: %d\n",
+		len(router.Runners()),
+		router.Default().Name,
+		cfg.AgentBackend,
+		len(cfg.AllowedChatIDs),
+		len(cfg.AllowedUserIDs),
+		cfg.AllowGroupChats,
+		cfg.MaxActiveJobsPerChat,
+	)
 	return nil
 }

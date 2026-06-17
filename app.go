@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strconv"
@@ -15,6 +16,8 @@ type App struct {
 	router *AgentRouter
 	memory *MemoryStore
 
+	jobs              *JobManager
+	confirmations     *ConfirmationStore
 	debateTranscripts map[string]string
 }
 
@@ -23,13 +26,16 @@ func NewApp(cfg Config, bot *TelegramBot, agent Agent, memory *MemoryStore) *App
 }
 
 func NewAppWithRouter(cfg Config, bot *TelegramBot, router *AgentRouter, memory *MemoryStore) *App {
-	return &App{
+	app := &App{
 		cfg:               cfg,
 		bot:               bot,
 		router:            router,
 		memory:            memory,
+		confirmations:     NewConfirmationStore(10 * time.Minute),
 		debateTranscripts: map[string]string{},
 	}
+	app.jobs = NewJobManager(cfg.MaxActiveJobsPerChat, app.executeJob)
+	return app
 }
 
 func (a *App) Run(ctx context.Context) error {
@@ -81,13 +87,25 @@ func (a *App) handleMessage(ctx context.Context, msg TelegramMessage) {
 	command := normalizeCommand(text)
 	switch command {
 	case "/start", "/id":
-		_ = a.sendMessage(ctx, msg.Chat.ID, a.identityMessage(msg.Chat.ID), msg.MessageID)
+		_ = a.sendMessage(ctx, msg.Chat.ID, a.identityMessage(msg), msg.MessageID)
 		return
 	case "/help":
 		_ = a.sendMessage(ctx, msg.Chat.ID, helpMessage(), msg.MessageID)
 		return
 	case "/agents":
 		a.handleAgents(ctx, msg)
+		return
+	case "/status":
+		a.handleStatus(ctx, msg)
+		return
+	case "/cancel":
+		a.handleCancel(ctx, msg)
+		return
+	case "/retry":
+		a.handleRetry(ctx, msg)
+		return
+	case "/confirm":
+		a.handleConfirm(ctx, msg)
 		return
 	case "/route":
 		a.handleRoute(ctx, msg)
@@ -102,9 +120,9 @@ func (a *App) handleMessage(ctx context.Context, msg TelegramMessage) {
 		return
 	}
 
-	if !a.isAllowed(msg.Chat.ID) {
-		_ = a.sendMessage(ctx, msg.Chat.ID, denyMessage(msg.Chat.ID), msg.MessageID)
-		log.Printf("denied chat_id=%d text=%q", msg.Chat.ID, truncate(text, 80))
+	if err := a.authorizeMessage(msg); err != nil {
+		_ = a.sendMessage(ctx, msg.Chat.ID, err.Error(), msg.MessageID)
+		log.Printf("denied chat_id=%d text=%q reason=%s", msg.Chat.ID, truncate(redactSecrets(text), 80), redactSecrets(err.Error()))
 		return
 	}
 
@@ -119,34 +137,68 @@ func (a *App) handleMessage(ctx context.Context, msg TelegramMessage) {
 		forceDebate = true
 	}
 
-	route, err := a.routeMessage(text)
-	if err != nil {
-		_ = a.sendMessage(ctx, msg.Chat.ID, err.Error(), msg.MessageID)
+	if a.needsDangerConfirmation(text) {
+		confirmation := a.confirmations.Add(msg, text, forceDebate)
+		_ = a.sendMessage(ctx, msg.Chat.ID, fmt.Sprintf("위험할 수 있는 작업 요청입니다. 실행하려면 다음 명령을 보내세요.\n/confirm %s", confirmation.ID), msg.MessageID)
 		return
 	}
 
-	log.Printf("handling chat_id=%d message_id=%d agent=%s backend=%s route=%s", msg.Chat.ID, msg.MessageID, route.Runner.Name, route.Runner.Backend, route.Reason)
+	a.enqueueAgentJob(ctx, msg, text, forceDebate)
+}
 
-	memoryContext, err := a.memoryContext(ctx, msg.Chat.ID)
+func (a *App) enqueueAgentJob(ctx context.Context, msg TelegramMessage, text string, forceDebate bool) JobSnapshot {
+	userID := int64(0)
+	if msg.From != nil {
+		userID = msg.From.ID
+	}
+	snapshot := a.jobs.Enqueue(ctx, &AgentJob{
+		ChatID:      msg.Chat.ID,
+		UserID:      userID,
+		ReplyTo:     msg.MessageID,
+		Message:     text,
+		ForceDebate: forceDebate,
+	})
+	if snapshot.State == JobQueued {
+		_ = a.sendMessage(ctx, msg.Chat.ID, fmt.Sprintf("작업이 대기열에 추가되었습니다.\njob: %s\n/status 로 상태를 볼 수 있고 /cancel %s 로 취소할 수 있습니다.", snapshot.ID, snapshot.ID), msg.MessageID)
+	}
+	return snapshot
+}
+
+func (a *App) executeJob(ctx context.Context, job *AgentJob) {
+	_ = a.sendMessage(ctx, job.ChatID, fmt.Sprintf("작업을 시작합니다.\njob: %s", job.ID), job.ReplyTo)
+
+	route, err := a.routeMessage(job.Message)
 	if err != nil {
-		log.Printf("memory load failed chat_id=%d: %v", msg.Chat.ID, err)
-		_ = a.sendMessage(ctx, msg.Chat.ID, "저장된 대화 기억을 읽지 못했습니다.\n\n"+err.Error(), msg.MessageID)
+		_ = a.sendMessage(ctx, job.ChatID, err.Error(), job.ReplyTo)
+		a.jobs.Finish(job, JobFailed, "", err.Error())
+		return
+	}
+	a.jobs.SetAgentName(job, route.Runner.Name)
+
+	log.Printf("handling job=%s chat_id=%d agent=%s backend=%s route=%s", job.ID, job.ChatID, route.Runner.Name, route.Runner.Backend, route.Reason)
+
+	memoryContext, err := a.memoryContext(ctx, job.ChatID)
+	if err != nil {
+		log.Printf("memory load failed chat_id=%d: %v", job.ChatID, err)
+		_ = a.sendMessage(ctx, job.ChatID, "저장된 대화 기억을 읽지 못했습니다.\n\n"+err.Error(), job.ReplyTo)
+		a.jobs.Finish(job, JobFailed, route.Runner.Name, err.Error())
 		return
 	}
 	prompt := promptWithMemory(memoryContext, route.Message)
 
 	done := make(chan struct{})
-	go a.keepTyping(ctx, msg.Chat.ID, done)
+	go a.keepTyping(ctx, job.ChatID, done)
+	go a.keepJobProgress(ctx, job, done)
 
 	answerAgent := route.Runner
 	answer := ""
 	var transcript []DebateTurn
-	if a.shouldDebate(route, forceDebate) {
-		result, err := a.answerWithDebate(ctx, msg.Chat.ID, route.Message, memoryContext)
+	if a.shouldDebate(route, job.ForceDebate) {
+		result, err := a.answerWithDebate(ctx, job.ChatID, route.Message, memoryContext)
 		close(done)
 		if err != nil {
-			log.Printf("debate failed chat_id=%d: %v", msg.Chat.ID, err)
-			_ = a.sendMessage(ctx, msg.Chat.ID, "agent 토론 실행에 실패했습니다.\n\n"+err.Error(), msg.MessageID)
+			log.Printf("debate failed job=%s chat_id=%d: %v", job.ID, job.ChatID, err)
+			a.finishJobError(ctx, job, route.Runner.Name, "agent 토론 실행에 실패했습니다.", err)
 			return
 		}
 		answer = result.Final
@@ -157,14 +209,19 @@ func (a *App) handleMessage(ctx context.Context, msg TelegramMessage) {
 		answer, err = route.Runner.Agent.Ask(ctx, prompt)
 		close(done)
 		if err != nil {
-			log.Printf("agent failed chat_id=%d agent=%s: %v", msg.Chat.ID, route.Runner.Name, err)
-			_ = a.sendMessage(ctx, msg.Chat.ID, "로컬 에이전트 실행에 실패했습니다.\n\n"+err.Error(), msg.MessageID)
+			log.Printf("agent failed job=%s chat_id=%d agent=%s: %v", job.ID, job.ChatID, route.Runner.Name, err)
+			a.finishJobError(ctx, job, route.Runner.Name, "로컬 에이전트 실행에 실패했습니다.", err)
 			return
 		}
 	}
+	if ctx.Err() != nil {
+		a.finishJobError(ctx, job, answerAgent.Name, "작업이 취소되었습니다.", ctx.Err())
+		return
+	}
 
 	if strings.TrimSpace(answer) == "" {
-		_ = a.sendMessage(ctx, msg.Chat.ID, "agent가 빈 응답을 반환했습니다.", msg.MessageID)
+		_ = a.sendMessage(ctx, job.ChatID, "agent가 빈 응답을 반환했습니다.", job.ReplyTo)
+		a.jobs.Finish(job, JobFailed, answerAgent.Name, "empty answer")
 		return
 	}
 
@@ -172,14 +229,17 @@ func (a *App) handleMessage(ctx context.Context, msg TelegramMessage) {
 	if a.memory != nil {
 		memoryID = newMemoryID()
 	}
-	if err := a.sendMessageWithMarkup(ctx, msg.Chat.ID, answer, msg.MessageID, a.answerActions(memoryID, transcript)); err != nil {
-		log.Printf("send answer failed chat_id=%d: %v", msg.Chat.ID, err)
+	safeAnswer := redactSecrets(answer)
+	if err := a.sendMessageWithMarkup(ctx, job.ChatID, safeAnswer, job.ReplyTo, a.answerActions(memoryID, transcript)); err != nil {
+		log.Printf("send answer failed chat_id=%d: %v", job.ChatID, err)
+		a.jobs.Finish(job, JobFailed, answerAgent.Name, err.Error())
 		return
 	}
 
-	if _, err := a.rememberWithAgentID(ctx, answerAgent.Agent, msg.Chat.ID, route.Message, answer, memoryID); err != nil {
-		log.Printf("memory append failed chat_id=%d: %v", msg.Chat.ID, err)
+	if _, err := a.rememberWithAgentID(ctx, answerAgent.Agent, job.ChatID, route.Message, safeAnswer, memoryID); err != nil {
+		log.Printf("memory append failed chat_id=%d: %v", job.ChatID, err)
 	}
+	a.jobs.Finish(job, JobSucceeded, answerAgent.Name, "")
 }
 
 func (a *App) handleCallback(ctx context.Context, query TelegramCallbackQuery) {
@@ -188,8 +248,8 @@ func (a *App) handleCallback(ctx context.Context, query TelegramCallbackQuery) {
 		return
 	}
 	chatID := query.Message.Chat.ID
-	if !a.isAllowed(chatID) {
-		a.answerCallback(ctx, query.ID, "허용되지 않은 chat입니다.")
+	if err := a.authorizeCallback(query); err != nil {
+		a.answerCallback(ctx, query.ID, err.Error())
 		return
 	}
 
@@ -310,6 +370,9 @@ func (a *App) routeMessage(text string) (AgentRoute, error) {
 }
 
 func (a *App) keepTyping(ctx context.Context, chatID int64, done <-chan struct{}) {
+	if a.bot == nil {
+		return
+	}
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
@@ -326,12 +389,46 @@ func (a *App) keepTyping(ctx context.Context, chatID int64, done <-chan struct{}
 	}
 }
 
-func (a *App) isAllowed(chatID int64) bool {
-	if a.cfg.AllowAllChats {
-		return true
+func (a *App) keepJobProgress(ctx context.Context, job *AgentJob, done <-chan struct{}) {
+	interval := a.cfg.JobProgressInterval
+	if interval <= 0 {
+		return
 	}
-	_, ok := a.cfg.AllowedChatIDs[chatID]
-	return ok
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-done:
+			return
+		case <-timer.C:
+			elapsed := time.Since(job.StartedAt).Round(time.Second)
+			if elapsed < 0 {
+				elapsed = 0
+			}
+			_ = a.sendMessage(ctx, job.ChatID, fmt.Sprintf("작업 진행 중입니다.\njob: %s\nelapsed: %s", job.ID, elapsed), job.ReplyTo)
+			timer.Reset(interval)
+		}
+	}
+}
+
+func (a *App) finishJobError(ctx context.Context, job *AgentJob, agentName, prefix string, err error) {
+	state := JobFailed
+	errText := redactSecrets(err.Error())
+	message := prefix + "\n\n" + errText
+	sendCtx := ctx
+	if errors.Is(err, context.Canceled) || ctx.Err() != nil {
+		state = JobCanceled
+		message = "작업이 취소되었습니다.\njob: " + job.ID
+		sendCtx = context.Background()
+	}
+	_ = a.sendMessage(sendCtx, job.ChatID, message, job.ReplyTo)
+	a.jobs.Finish(job, state, agentName, errText)
+}
+
+func (a *App) isAllowed(chatID int64) bool {
+	return a.isChatAllowed(chatID)
 }
 
 func normalizeCommand(text string) string {

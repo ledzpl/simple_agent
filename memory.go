@@ -456,7 +456,7 @@ func redactMemoryContent(text string) string {
 	text = memoryUSPhonePattern.ReplaceAllString(text, "[redacted-phone]")
 	text = memoryTelegramTokenPattern.ReplaceAllString(text, "[redacted-token]")
 	text = memoryOpenAIKeyPattern.ReplaceAllString(text, "[redacted-token]")
-	return text
+	return redactSecrets(text)
 }
 
 func newMemoryID() string {
