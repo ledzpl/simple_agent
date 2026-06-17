@@ -229,7 +229,7 @@ func (a *App) executeJob(ctx context.Context, job *AgentJob) {
 
 	log.Printf("handling job=%s chat_id=%d agent=%s backend=%s route=%s", job.ID, job.ChatID, route.Runner.Name, route.Runner.Backend, route.Reason)
 
-	memoryContext, err := a.memoryContext(ctx, job.ChatID)
+	memoryContext, err := a.memoryContext(ctx, job.ChatID, route.Message)
 	if err != nil {
 		log.Printf("memory load failed chat_id=%d: %v", job.ChatID, err)
 		a.finishJobError(ctx, job, route.Runner.Name, "저장된 대화 기억을 읽지 못했습니다.", err)

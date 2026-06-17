@@ -5,11 +5,11 @@ import (
 	"fmt"
 )
 
-func (a *App) memoryContext(ctx context.Context, chatID int64) (string, error) {
+func (a *App) memoryContext(ctx context.Context, chatID int64, query string) (string, error) {
 	if a.memory == nil {
 		return "", nil
 	}
-	return a.memory.BuildContext(ctx, chatID)
+	return a.memory.BuildContextForQuery(ctx, chatID, query)
 }
 
 func (a *App) remember(ctx context.Context, chatID int64, userMessage, assistantMessage string) error {

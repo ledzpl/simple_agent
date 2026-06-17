@@ -57,8 +57,8 @@ Optional:
 Queue limits, progress cadence, state location, debate size, memory window, answer buttons, and dangerous-action confirmation use fixed safe defaults instead of runtime configuration.
 
 - Jobs: one active job per chat, 20 history entries, 60-second progress updates, state in `.telegram-state`.
-- Debate: up to four agents, one round, transcript messages enabled.
-- Memory: 20 notes, 12,000 context characters, 1,000-character refined notes, 90-second refinement timeout.
+- Debate: up to four independent role analyses, one moderator review, final synthesis, transcript messages enabled.
+- Memory: up to 20 relevant/recent notes, 12,000 context characters, 1,000-character refined notes, 90-second refinement timeout.
 - Telegram: plain-text responses, answer buttons enabled, dangerous-action confirmation required.
 
 ## Role Agents
@@ -98,7 +98,9 @@ If an agent file omits `default`, its first agent is used.
 
 Routing:
 
-- Automatic routing picks the highest scoring agent. Longer matching phrases, repeated matches, exact ASCII token matches, and optional `examples` can raise the score.
+- Automatic routing picks the highest scoring agent. All matching keywords contribute to the score, so several specific signals can outweigh one generic match.
+- Longer matching phrases, repeated matches, exact token matches, and optional `examples` raise the score. Example similarity is added to keyword evidence instead of replacing it.
+- One-character Korean matches such as `약` or `법` must appear as separate terms, preventing matches inside unrelated words such as `예약`.
 - If nothing matches, the configured default agent is used.
 - Use `/agent <name> <message>` to force a specific agent.
 - Use `/agents` in Telegram to list configured agents and match rules.
@@ -109,14 +111,19 @@ Routing:
 When `DEBATE_ENABLED=true`, normal user messages are handled as a short discussion:
 
 1. The router selects up to four matched role agents from `agents.json` and includes the default moderator when there is room.
-2. Each selected agent writes one concise turn, which is sent to Telegram as it completes.
-3. The default agent reads the transcript and writes the final answer.
+2. Each selected agent produces an independent analysis without seeing earlier agents, reducing anchoring and repetition.
+3. The default moderator audits the analyses for contradictions, unsupported claims, missing constraints, and safety issues.
+4. The moderator applies those corrections and writes the final answer.
 
 Use `/agent <name> <message>` for a single-agent answer, bypassing debate. Use `/debate <message>` to force debate even when `DEBATE_ENABLED=false`. Keeping `DEBATE_ENABLED=false` is usually better for Codex because each debate turn starts another backend call.
 
 ## Memory
 
-Memory context uses the latest 20 notes up to 12,000 characters. Refined notes are capped at 1,000 characters with a 90-second refinement timeout.
+Memory context prioritizes notes that share meaningful terms with the current request, then includes up to three recent notes as continuity fallback. The final context is capped at 20 notes and 12,000 characters. Refined notes are capped at 1,000 characters with a 90-second refinement timeout.
+
+Stored memory is explicitly marked as untrusted and potentially outdated in the agent prompt. Agents are instructed to use it only as relevant context, not as executable instructions.
+
+All normal single-agent replies also receive a shared response protocol requiring the agent to distinguish facts, assumptions, and uncertainty; check contradictions and likely failure modes; avoid fabricated tool or source claims; and lead with a concrete answer.
 
 Memory commands:
 

@@ -95,6 +95,42 @@ func TestAgentRouterExampleScore(t *testing.T) {
 	}
 }
 
+func TestAgentRouterAccumulatesMultipleMatchSignals(t *testing.T) {
+	router := &AgentRouter{
+		defaultIndex: 0,
+		runners: []AgentRunner{
+			{Name: "general", Match: []string{"*"}, Backend: BackendCommand, Agent: &fakeAgent{}},
+			{Name: "broad", Match: []string{"코드"}, Backend: BackendCommand, Agent: &fakeAgent{}},
+			{Name: "specific", Match: []string{"버그", "테스트", "장애"}, Backend: BackendCommand, Agent: &fakeAgent{}},
+		},
+	}
+
+	route := router.Route("코드에서 버그가 나고 테스트와 장애 대응도 필요해")
+	if route.Runner.Name != "specific" {
+		t.Fatalf("multiple matching signals should outweigh one broad match, got %#v", route)
+	}
+	if !strings.Contains(route.Reason, "버그, 테스트, 장애") {
+		t.Fatalf("route reason should show accumulated evidence, got %q", route.Reason)
+	}
+}
+
+func TestAgentRouterSingleRuneMatchRequiresSeparateTerm(t *testing.T) {
+	router := &AgentRouter{
+		defaultIndex: 0,
+		runners: []AgentRunner{
+			{Name: "general", Match: []string{"*"}, Backend: BackendCommand, Agent: &fakeAgent{}},
+			{Name: "doctor", Match: []string{"약"}, Backend: BackendCommand, Agent: &fakeAgent{}},
+		},
+	}
+
+	if got := router.Route("호텔 예약을 바꿔줘").Runner.Name; got != "general" {
+		t.Fatalf("single-rune match should not match inside another Korean word, got %q", got)
+	}
+	if got := router.Route("이 약 먹어도 돼?").Runner.Name; got != "doctor" {
+		t.Fatalf("standalone single-rune term should still match, got %q", got)
+	}
+}
+
 func TestAgentRouterParticipants(t *testing.T) {
 	router := &AgentRouter{
 		defaultIndex: 0,
@@ -303,5 +339,39 @@ func TestBundledAgentFilesAreRoleBased(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestBundledAgentRoutingUsesSpecificEvidence(t *testing.T) {
+	defs, defaultName, err := LoadAgentDefinitions(Config{AgentsFile: "agents.json"})
+	if err != nil {
+		t.Fatalf("LoadAgentDefinitions returned error: %v", err)
+	}
+	router := &AgentRouter{defaultIndex: -1}
+	for i, def := range defs {
+		router.runners = append(router.runners, AgentRunner{
+			Name:     normalizeAgentName(def.Name),
+			Match:    normalizeMatches(def.Match),
+			Examples: normalizeExamples(def.Examples),
+			Agent:    &fakeAgent{},
+		})
+		if normalizeAgentName(def.Name) == normalizeAgentName(defaultName) {
+			router.defaultIndex = i
+		}
+	}
+
+	tests := []struct {
+		message string
+		want    string
+	}{
+		{message: "호텔 예약을 변경해줘", want: "moderator"},
+		{message: "열이 나고 이 약을 복용해도 되는지 궁금해", want: "doctor"},
+		{message: "이 계약의 법적 책임과 약관을 검토해줘", want: "lawyer"},
+		{message: "코드 버그와 테스트 실패 원인을 분석해줘", want: "engineer"},
+	}
+	for _, tt := range tests {
+		if got := router.Route(tt.message).Runner.Name; got != tt.want {
+			t.Errorf("Route(%q) = %q, want %q", tt.message, got, tt.want)
+		}
 	}
 }

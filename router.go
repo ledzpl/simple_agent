@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 type AgentRoute struct {
@@ -240,10 +242,14 @@ func evaluateRoute(lowerMessage string, runner AgentRunner) routeEvaluation {
 		return match
 	}
 	exampleScore, exampleReason := exampleMatchScore(lowerMessage, runner.Examples)
-	if exampleScore > match.Score {
-		return routeEvaluation{Score: exampleScore, Reason: exampleReason}
+	if exampleScore == 0 {
+		return match
 	}
-	return match
+	reason := exampleReason
+	if match.Reason != "" {
+		reason = match.Reason + "; " + exampleReason
+	}
+	return routeEvaluation{Score: match.Score + exampleScore, Reason: reason}
 }
 
 func matchScore(lowerMessage string, matches []string) (int, string) {
@@ -252,8 +258,8 @@ func matchScore(lowerMessage string, matches []string) (int, string) {
 }
 
 func matchEvaluation(lowerMessage string, matches []string) routeEvaluation {
-	bestScore := 0
-	bestReason := ""
+	score := 0
+	var reasons []string
 	for _, match := range matches {
 		if match == "*" {
 			continue
@@ -269,17 +275,19 @@ func matchEvaluation(lowerMessage string, matches []string) routeEvaluation {
 			continue
 		}
 		if containsRouteTerm(lowerMessage, term) {
-			score := len([]rune(term))*10 + strings.Count(lowerMessage, term)*5
+			termScore := len([]rune(term))*10 + strings.Count(lowerMessage, term)*5
 			if isExactTokenMatch(lowerMessage, term) {
-				score += 20
+				termScore += 20
 			}
-			if score > bestScore {
-				bestScore = score
-				bestReason = fmt.Sprintf("matched: %s (score %d)", term, score)
-			}
+			score += termScore
+			reasons = append(reasons, term)
 		}
 	}
-	return routeEvaluation{Score: bestScore, Reason: bestReason}
+	reason := ""
+	if len(reasons) > 0 {
+		reason = fmt.Sprintf("matched: %s (score %d)", strings.Join(reasons, ", "), score)
+	}
+	return routeEvaluation{Score: score, Reason: reason}
 }
 
 func exampleMatchScore(lowerMessage string, examples []string) (int, string) {
@@ -324,6 +332,14 @@ func containsRouteTerm(message, term string) bool {
 	if term == "" {
 		return false
 	}
+	if len([]rune(term)) == 1 {
+		for _, field := range routeFields(message) {
+			if field == term {
+				return true
+			}
+		}
+		return false
+	}
 	if !strings.Contains(message, term) {
 		return false
 	}
@@ -341,9 +357,17 @@ func isExactTokenMatch(message, term string) bool {
 			return false
 		}
 		index += start
-		beforeOK := index == 0 || !isASCIILetterDigit(rune(message[index-1]))
+		beforeOK := index == 0
+		if !beforeOK {
+			before, _ := utf8.DecodeLastRuneInString(message[:index])
+			beforeOK = !isRouteWordRune(before)
+		}
 		afterIndex := index + len(term)
-		afterOK := afterIndex >= len(message) || !isASCIILetterDigit(rune(message[afterIndex]))
+		afterOK := afterIndex >= len(message)
+		if !afterOK {
+			after, _ := utf8.DecodeRuneInString(message[afterIndex:])
+			afterOK = !isRouteWordRune(after)
+		}
 		if beforeOK && afterOK {
 			return true
 		}
@@ -367,18 +391,33 @@ func isASCIILetterDigit(r rune) bool {
 	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
 }
 
+func isRouteWordRune(r rune) bool {
+	return unicode.IsLetter(r) || unicode.IsDigit(r)
+}
+
 func routeTerms(text string) map[string]struct{} {
 	terms := map[string]struct{}{}
-	for _, field := range strings.FieldsFunc(text, func(r rune) bool {
-		return r == ' ' || r == '\t' || r == '\n' || r == '\r' || r == ',' || r == '.' || r == '?' || r == '!' || r == ':' || r == ';' || r == '(' || r == ')' || r == '[' || r == ']'
-	}) {
-		field = strings.TrimSpace(strings.ToLower(field))
+	for _, field := range routeFields(text) {
 		if len([]rune(field)) < 2 {
 			continue
 		}
 		terms[field] = struct{}{}
 	}
 	return terms
+}
+
+func routeFields(text string) []string {
+	fields := strings.FieldsFunc(text, func(r rune) bool {
+		return !isRouteWordRune(r)
+	})
+	out := make([]string, 0, len(fields))
+	for _, field := range fields {
+		field = strings.TrimSpace(strings.ToLower(field))
+		if field != "" {
+			out = append(out, field)
+		}
+	}
+	return out
 }
 
 func parseAgentCommand(text string) (string, string, bool) {

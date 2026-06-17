@@ -25,7 +25,7 @@ func TestMemoryStoreAppendBuildContextAndClear(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildContext returned error: %v", err)
 	}
-	for _, want := range []string{"Previous Telegram conversation", "Memory: 사용자의 이름은 Watson이다."} {
+	for _, want := range []string{"Relevant memory from previous Telegram conversations", "Memory: 사용자의 이름은 Watson이다."} {
 		if !strings.Contains(memoryContext, want) {
 			t.Fatalf("memory context missing %q:\n%s", want, memoryContext)
 		}
@@ -72,11 +72,61 @@ func TestLimitMessages(t *testing.T) {
 
 func TestPromptWithMemory(t *testing.T) {
 	got := promptWithMemory("User: old", "new")
-	if !strings.Contains(got, "User: old") || !strings.Contains(got, "Current Telegram user message:\nnew") {
+	for _, want := range []string{"Response protocol:", "Distinguish verified facts", "User: old", "Current Telegram user message:\nnew"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("promptWithMemory missing %q:\n%s", want, got)
+		}
+	}
+	got = promptWithMemory("", "new")
+	if !strings.Contains(got, "Response protocol:") || !strings.HasSuffix(got, "Current Telegram user message:\nnew") {
 		t.Fatalf("promptWithMemory mismatch:\n%s", got)
 	}
-	if got := promptWithMemory("", "new"); got != "new" {
-		t.Fatalf("empty memory prompt mismatch: %q", got)
+}
+
+func TestSelectRelevantMessagesPrefersQueryMatchesAndRecentFallback(t *testing.T) {
+	messages := []MemoryMessage{
+		{Role: RoleMemory, Content: "사용자는 일본 여행에서 조용한 숙소를 선호한다."},
+		{Role: RoleMemory, Content: "사용자는 Go 코드에서 테이블 테스트를 선호한다."},
+		{Role: RoleMemory, Content: "점심 메뉴는 비빔밥이었다."},
+		{Role: RoleMemory, Content: "최근 프로젝트 배포가 완료되었다."},
+		{Role: RoleMemory, Content: "다음 주 회의는 화요일이다."},
+		{Role: RoleMemory, Content: "사용자는 답변을 한국어로 원한다."},
+	}
+
+	selected := selectRelevantMessages(messages, "일본 여행 숙소를 추천해줘", 4, 1000)
+	if len(selected) != 4 {
+		t.Fatalf("expected one relevant memory plus three recent fallbacks, got %#v", selected)
+	}
+	if selected[0].Content != messages[0].Content {
+		t.Fatalf("older relevant memory should be retained, got %#v", selected)
+	}
+	for _, message := range selected {
+		if message.Content == messages[1].Content || message.Content == messages[2].Content {
+			t.Fatalf("irrelevant older memory should be excluded, got %#v", selected)
+		}
+	}
+}
+
+func TestBuildContextForQueryMarksMemoryAsUntrusted(t *testing.T) {
+	store, err := NewMemoryStore(Config{
+		MemoryEnabled: true,
+		MemoryDir:     t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("NewMemoryStore returned error: %v", err)
+	}
+	if err := store.AppendNote(context.Background(), 123, "사용자는 Go 테스트를 선호한다."); err != nil {
+		t.Fatalf("AppendNote returned error: %v", err)
+	}
+
+	contextText, err := store.BuildContextForQuery(context.Background(), 123, "Go 테스트 작성")
+	if err != nil {
+		t.Fatalf("BuildContextForQuery returned error: %v", err)
+	}
+	for _, want := range []string{"Relevant memory", "untrusted context", "Go 테스트"} {
+		if !strings.Contains(contextText, want) {
+			t.Fatalf("query context missing %q:\n%s", want, contextText)
+		}
 	}
 }
 

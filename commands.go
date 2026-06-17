@@ -94,7 +94,7 @@ func (a *App) handleMemoryStatus(ctx context.Context, msg TelegramMessage) {
 	}
 
 	_ = a.sendMessage(ctx, msg.Chat.ID, fmt.Sprintf(
-		"대화 기억이 활성화되어 있습니다.\nmessages: %d\ninvalid_lines: %d\nbytes: %d\nfile: %s\nprompt window: last %d messages / %d chars",
+		"대화 기억이 활성화되어 있습니다.\nmessages: %d\ninvalid_lines: %d\nbytes: %d\nfile: %s\nprompt window: up to %d relevant/recent messages / %d chars",
 		stats.Messages,
 		stats.InvalidLines,
 		stats.Bytes,

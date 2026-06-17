@@ -23,7 +23,7 @@ func (a *sequenceAgent) Ask(ctx context.Context, prompt string) (string, error) 
 }
 
 func TestAnswerWithDebate(t *testing.T) {
-	general := &sequenceAgent{answers: []string{"general view", "final answer"}}
+	general := &sequenceAgent{answers: []string{"general view", "review notes", "final answer"}}
 	coder := &sequenceAgent{answers: []string{"coder view"}}
 	critic := &sequenceAgent{answers: []string{"critic view"}}
 
@@ -44,17 +44,23 @@ func TestAnswerWithDebate(t *testing.T) {
 	if result.Final != "final answer" {
 		t.Fatalf("final answer mismatch: %q", result.Final)
 	}
-	if len(result.Transcript) != 3 {
-		t.Fatalf("expected three debate turns, got %#v", result.Transcript)
+	if len(result.Transcript) != 4 {
+		t.Fatalf("expected three analyses and one review, got %#v", result.Transcript)
 	}
-	if result.Transcript[0].AgentName != "coder" || result.Transcript[0].Content != "coder view" {
+	if result.Transcript[0].AgentName != "coder" || result.Transcript[0].Stage != "analysis" || result.Transcript[0].Content != "coder view" {
 		t.Fatalf("first turn mismatch: %#v", result.Transcript[0])
 	}
-	if !strings.Contains(critic.prompts[0], "coder view") {
-		t.Fatalf("second participant did not receive prior transcript:\n%s", critic.prompts[0])
+	if strings.Contains(critic.prompts[0], "coder view") {
+		t.Fatalf("first-pass analyses should be independent:\n%s", critic.prompts[0])
+	}
+	if result.Transcript[3].Stage != "review" || result.Transcript[3].Content != "review notes" {
+		t.Fatalf("review turn mismatch: %#v", result.Transcript[3])
 	}
 	if !strings.Contains(general.prompts[1], "coder view") || !strings.Contains(general.prompts[1], "critic view") {
-		t.Fatalf("synthesis prompt missing transcript:\n%s", general.prompts[1])
+		t.Fatalf("review prompt missing independent analyses:\n%s", general.prompts[1])
+	}
+	if !strings.Contains(general.prompts[2], "review notes") || !strings.Contains(general.prompts[2], "coder view") {
+		t.Fatalf("synthesis prompt missing review or analyses:\n%s", general.prompts[2])
 	}
 }
 
@@ -76,6 +82,13 @@ func TestBuildDebatePrompts(t *testing.T) {
 	for _, want := range []string{"synthesis agent", "Memory: prior", "계획 세워줘", "risk", "Final answer:"} {
 		if !strings.Contains(synthesis, want) {
 			t.Fatalf("synthesis prompt missing %q:\n%s", want, synthesis)
+		}
+	}
+
+	review := buildDebateReviewPrompt("계획 세워줘", "Memory: prior", []DebateTurn{turn})
+	for _, want := range []string{"critical reviewer", "unsupported claims", "Memory: prior", "계획 세워줘", "risk", "Review:"} {
+		if !strings.Contains(review, want) {
+			t.Fatalf("review prompt missing %q:\n%s", want, review)
 		}
 	}
 }
