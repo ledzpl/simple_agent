@@ -1,4 +1,4 @@
-package main
+package app
 
 import (
 	"context"
@@ -10,15 +10,9 @@ import (
 	"syscall"
 )
 
-func main() {
-	if err := run(); err != nil {
-		log.Fatalf("telegram-local-agent: %v", err)
-	}
-}
-
-func run() error {
-	if len(os.Args) > 1 {
-		switch os.Args[1] {
+func Run(args []string) error {
+	if len(args) > 0 {
+		switch args[0] {
 		case "--check-config":
 			return checkConfig()
 		case "-h", "--help":

@@ -1,5 +1,6 @@
 .env
-telegram-local-agent
+/telegram-local-agent
+bin/
 tmp/
 .telegram-memory/
 .telegram-state/

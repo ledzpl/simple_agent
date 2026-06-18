@@ -4,7 +4,7 @@ WORKDIR /src
 COPY go.mod ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /out/telegram-local-agent .
+RUN mkdir -p /out && CGO_ENABLED=0 GOOS=linux go build -trimpath -o /out/telegram-local-agent ./cmd/telegram-local-agent
 
 FROM alpine:3.20
 

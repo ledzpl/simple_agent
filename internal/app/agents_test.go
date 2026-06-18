@@ -1,4 +1,4 @@
-package main
+package app
 
 import (
 	"context"
@@ -315,7 +315,7 @@ func TestConfigForAgentInheritsDefaultBackend(t *testing.T) {
 func TestBundledAgentFilesAreRoleBased(t *testing.T) {
 	for _, path := range []string{"agents.json", "agents.example.json"} {
 		t.Run(path, func(t *testing.T) {
-			data, err := os.ReadFile(path)
+			data, err := os.ReadFile(bundledAgentPath(path))
 			if err != nil {
 				t.Fatalf("read %s: %v", path, err)
 			}
@@ -343,7 +343,7 @@ func TestBundledAgentFilesAreRoleBased(t *testing.T) {
 }
 
 func TestBundledAgentRoutingUsesSpecificEvidence(t *testing.T) {
-	defs, defaultName, err := LoadAgentDefinitions(Config{AgentsFile: "agents.json"})
+	defs, defaultName, err := LoadAgentDefinitions(Config{AgentsFile: bundledAgentPath("agents.json")})
 	if err != nil {
 		t.Fatalf("LoadAgentDefinitions returned error: %v", err)
 	}
@@ -374,4 +374,8 @@ func TestBundledAgentRoutingUsesSpecificEvidence(t *testing.T) {
 			t.Errorf("Route(%q) = %q, want %q", tt.message, got, tt.want)
 		}
 	}
+}
+
+func bundledAgentPath(name string) string {
+	return filepath.Join("..", "..", name)
 }

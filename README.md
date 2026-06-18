@@ -10,7 +10,8 @@ It uses Telegram Bot API long polling. You do not need to expose a local HTTP se
 2. Build the app.
 
 ```sh
-go build ./...
+mkdir -p bin
+go build -o bin/telegram-local-agent ./cmd/telegram-local-agent
 ```
 
 3. Create `.env` from `.env.example`.
@@ -22,13 +23,13 @@ cp .env.example .env
 4. Check the configuration.
 
 ```sh
-go run . --check-config
+go run ./cmd/telegram-local-agent --check-config
 ```
 
 5. Start once with only `TELEGRAM_BOT_TOKEN` set, then send `/id` to the bot.
 
 ```sh
-go run .
+go run ./cmd/telegram-local-agent
 ```
 
 6. Put the returned chat id into `TELEGRAM_ALLOWED_CHAT_IDS`, optionally put the returned user id into `TELEGRAM_ALLOWED_USER_IDS`, restart the app, and send a normal message to the bot.
@@ -231,5 +232,12 @@ Operational samples are in `deploy/`:
 
 - `deploy/telegram-local-agent.service`: systemd service with restricted filesystem access.
 - `deploy/com.example.telegram-local-agent.plist`: launchd plist for macOS.
+
+Source layout:
+
+- `cmd/telegram-local-agent/`: executable entry point.
+- `internal/app/`: application code and unit tests.
+- `bin/`: local build output, ignored by Git and Docker.
+- `deploy/`: systemd and launchd samples.
 
 GitHub Actions in `.github/workflows/ci.yml` runs `go test`, `go vet`, and `go build`. Version tags matching `v*` build Linux and macOS release binaries.

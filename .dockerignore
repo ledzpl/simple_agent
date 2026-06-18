@@ -9,6 +9,7 @@ tmp/
 !.env.example
 
 agents.json
-telegram-local-agent
+/telegram-local-agent
+bin/
 TODO.md
 .DS_Store
