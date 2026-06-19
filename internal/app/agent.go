@@ -20,8 +20,6 @@ func NewAgent(cfg Config) (Agent, error) {
 	switch cfg.AgentBackend {
 	case BackendCodex:
 		return CodexAgent{cfg: cfg}, nil
-	case BackendCommand:
-		return CommandAgent{cfg: cfg}, nil
 	case BackendOllama:
 		return OllamaAgent{
 			cfg:    cfg,
@@ -85,36 +83,6 @@ func (a CodexAgent) Ask(ctx context.Context, prompt string) (string, error) {
 	answer := strings.TrimSpace(string(data))
 	if answer == "" {
 		return "", fmt.Errorf("codex returned an empty answer%s", formatStderr(stderr.String()))
-	}
-	return answer, nil
-}
-
-type CommandAgent struct {
-	cfg Config
-}
-
-func (a CommandAgent) Ask(ctx context.Context, prompt string) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, a.cfg.AgentTimeout)
-	defer cancel()
-
-	cmd := exec.CommandContext(ctx, a.cfg.Command[0], a.cfg.Command[1:]...)
-	cmd.Stdin = strings.NewReader(buildPrompt(a.cfg.AgentSystemPrompt, prompt))
-
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		if ctx.Err() != nil {
-			return "", fmt.Errorf("local command timed out after %s", a.cfg.AgentTimeout)
-		}
-		return "", fmt.Errorf("local command failed: %w%s", err, formatStderr(stderr.String()))
-	}
-
-	answer := strings.TrimSpace(stdout.String())
-	if answer == "" {
-		return "", fmt.Errorf("local command returned an empty answer%s", formatStderr(stderr.String()))
 	}
 	return answer, nil
 }

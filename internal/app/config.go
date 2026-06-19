@@ -11,9 +11,8 @@ import (
 )
 
 const (
-	BackendCodex   = "codex"
-	BackendCommand = "command"
-	BackendOllama  = "ollama"
+	BackendCodex  = "codex"
+	BackendOllama = "ollama"
 
 	defaultAgentName     = "default"
 	maxActiveJobsPerChat = 1
@@ -50,9 +49,6 @@ type Config struct {
 	CodexWorkDir string
 	CodexModel   string
 	CodexSandbox string
-
-	Command          []string
-	CommandAllowlist map[string]struct{}
 
 	OllamaURL   string
 	OllamaModel string
@@ -120,11 +116,6 @@ func LoadConfig() (Config, error) {
 	}
 	cfg.AllowedUserIDs = userIDs
 
-	cfg.CommandAllowlist, err = parseCommandAllowlist(os.Getenv("LOCAL_AGENT_COMMAND_ALLOWLIST"))
-	if err != nil {
-		return Config{}, err
-	}
-
 	if cfg.CodexWorkDir != "" {
 		abs, err := filepath.Abs(cfg.CodexWorkDir)
 		if err != nil {
@@ -147,21 +138,6 @@ func LoadConfig() (Config, error) {
 			return Config{}, fmt.Errorf("resolve STATE_DIR: %w", err)
 		}
 		cfg.StateDir = abs
-	}
-
-	if cfg.AgentBackend == BackendCommand {
-		raw := strings.TrimSpace(os.Getenv("LOCAL_AGENT_COMMAND"))
-		if raw == "" {
-			return Config{}, errors.New("LOCAL_AGENT_COMMAND is required when AGENT_BACKEND=command")
-		}
-		args, err := splitCommandLine(raw)
-		if err != nil {
-			return Config{}, fmt.Errorf("parse LOCAL_AGENT_COMMAND: %w", err)
-		}
-		if len(args) == 0 {
-			return Config{}, errors.New("LOCAL_AGENT_COMMAND is empty")
-		}
-		cfg.Command = args
 	}
 
 	if err := validateAgentConfig(cfg); err != nil {
@@ -187,22 +163,12 @@ func validateAgentConfig(cfg Config) error {
 		default:
 			return fmt.Errorf("unsupported CODEX_SANDBOX %q; use read-only or workspace-write", cfg.CodexSandbox)
 		}
-	case BackendCommand:
-		if len(cfg.Command) == 0 {
-			return errors.New("LOCAL_AGENT_COMMAND or agent command is required when backend is command")
-		}
-		if len(cfg.CommandAllowlist) == 0 {
-			return errors.New("LOCAL_AGENT_COMMAND_ALLOWLIST is required when backend is command")
-		}
-		if err := validateCommandAllowed(cfg.Command, cfg.CommandAllowlist); err != nil {
-			return err
-		}
 	case BackendOllama:
 		if strings.TrimSpace(cfg.OllamaModel) == "" {
 			return errors.New("OLLAMA_MODEL or agent ollama_model is required when backend is ollama")
 		}
 	default:
-		return fmt.Errorf("unsupported backend %q; use %q, %q, or %q", cfg.AgentBackend, BackendCodex, BackendCommand, BackendOllama)
+		return fmt.Errorf("unsupported backend %q; use %q or %q", cfg.AgentBackend, BackendCodex, BackendOllama)
 	}
 	return nil
 }
@@ -297,39 +263,3 @@ func parseInt64Set(raw, key string) (map[int64]struct{}, error) {
 	return ids, nil
 }
 
-func parseCommandAllowlist(raw string) (map[string]struct{}, error) {
-	allowed := map[string]struct{}{}
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return allowed, nil
-	}
-	for _, part := range strings.Split(raw, ",") {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
-		}
-		allowed[part] = struct{}{}
-		allowed[filepath.Base(part)] = struct{}{}
-	}
-	return allowed, nil
-}
-
-func validateCommandAllowed(command []string, allowlist map[string]struct{}) error {
-	if len(command) == 0 {
-		return errors.New("command is empty")
-	}
-	if len(allowlist) == 0 {
-		return errors.New("LOCAL_AGENT_COMMAND_ALLOWLIST is required when backend is command")
-	}
-	executable := strings.TrimSpace(command[0])
-	if executable == "" {
-		return errors.New("command executable is empty")
-	}
-	if _, ok := allowlist[executable]; ok {
-		return nil
-	}
-	if _, ok := allowlist[filepath.Base(executable)]; ok {
-		return nil
-	}
-	return fmt.Errorf("command executable %q is not in LOCAL_AGENT_COMMAND_ALLOWLIST", executable)
-}

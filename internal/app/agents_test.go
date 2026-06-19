@@ -1,7 +1,6 @@
 package app
 
 import (
-	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -16,7 +15,7 @@ func TestAgentRouterRoutesByMatch(t *testing.T) {
 	router := &AgentRouter{
 		defaultIndex: 0,
 		runners: []AgentRunner{
-			{Name: "general", Description: "general", Match: []string{"*"}, Backend: BackendCommand, Agent: general},
+			{Name: "general", Description: "general", Match: []string{"*"}, Backend: BackendCodex, Agent: general},
 			{Name: "coder", Description: "coding", Match: []string{"코드", "버그"}, Backend: BackendCodex, Agent: coder},
 		},
 	}
@@ -39,9 +38,9 @@ func TestAgentRouterNegativeMatchAndScores(t *testing.T) {
 	router := &AgentRouter{
 		defaultIndex: 0,
 		runners: []AgentRunner{
-			{Name: "general", Match: []string{"*"}, Backend: BackendCommand, Agent: &fakeAgent{}},
-			{Name: "engineer", Match: []string{"코드", "!법률"}, Examples: []string{"코드 법률 리스크를 검토해줘"}, Backend: BackendCommand, Agent: &fakeAgent{}},
-			{Name: "lawyer", Match: []string{"법률"}, Backend: BackendCommand, Agent: &fakeAgent{}},
+			{Name: "general", Match: []string{"*"}, Backend: BackendCodex, Agent: &fakeAgent{}},
+			{Name: "engineer", Match: []string{"코드", "!법률"}, Examples: []string{"코드 법률 리스크를 검토해줘"}, Backend: BackendCodex, Agent: &fakeAgent{}},
+			{Name: "lawyer", Match: []string{"법률"}, Backend: BackendCodex, Agent: &fakeAgent{}},
 		},
 	}
 
@@ -66,8 +65,8 @@ func TestAgentRouterBlockedDefaultDoesNotJoinParticipants(t *testing.T) {
 	router := &AgentRouter{
 		defaultIndex: 0,
 		runners: []AgentRunner{
-			{Name: "general", Match: []string{"*", "!비밀"}, Backend: BackendCommand, Agent: &fakeAgent{}},
-			{Name: "engineer", Match: []string{"코드"}, Backend: BackendCommand, Agent: &fakeAgent{}},
+			{Name: "general", Match: []string{"*", "!비밀"}, Backend: BackendCodex, Agent: &fakeAgent{}},
+			{Name: "engineer", Match: []string{"코드"}, Backend: BackendCodex, Agent: &fakeAgent{}},
 		},
 	}
 
@@ -81,8 +80,8 @@ func TestAgentRouterExampleScore(t *testing.T) {
 	router := &AgentRouter{
 		defaultIndex: 0,
 		runners: []AgentRunner{
-			{Name: "general", Match: []string{"*"}, Backend: BackendCommand, Agent: &fakeAgent{}},
-			{Name: "teacher", Examples: []string{"재귀 함수를 쉽게 설명해줘"}, Backend: BackendCommand, Agent: &fakeAgent{}},
+			{Name: "general", Match: []string{"*"}, Backend: BackendCodex, Agent: &fakeAgent{}},
+			{Name: "teacher", Examples: []string{"재귀 함수를 쉽게 설명해줘"}, Backend: BackendCodex, Agent: &fakeAgent{}},
 		},
 	}
 
@@ -99,9 +98,9 @@ func TestAgentRouterAccumulatesMultipleMatchSignals(t *testing.T) {
 	router := &AgentRouter{
 		defaultIndex: 0,
 		runners: []AgentRunner{
-			{Name: "general", Match: []string{"*"}, Backend: BackendCommand, Agent: &fakeAgent{}},
-			{Name: "broad", Match: []string{"코드"}, Backend: BackendCommand, Agent: &fakeAgent{}},
-			{Name: "specific", Match: []string{"버그", "테스트", "장애"}, Backend: BackendCommand, Agent: &fakeAgent{}},
+			{Name: "general", Match: []string{"*"}, Backend: BackendCodex, Agent: &fakeAgent{}},
+			{Name: "broad", Match: []string{"코드"}, Backend: BackendCodex, Agent: &fakeAgent{}},
+			{Name: "specific", Match: []string{"버그", "테스트", "장애"}, Backend: BackendCodex, Agent: &fakeAgent{}},
 		},
 	}
 
@@ -118,8 +117,8 @@ func TestAgentRouterSingleRuneMatchRequiresSeparateTerm(t *testing.T) {
 	router := &AgentRouter{
 		defaultIndex: 0,
 		runners: []AgentRunner{
-			{Name: "general", Match: []string{"*"}, Backend: BackendCommand, Agent: &fakeAgent{}},
-			{Name: "doctor", Match: []string{"약"}, Backend: BackendCommand, Agent: &fakeAgent{}},
+			{Name: "general", Match: []string{"*"}, Backend: BackendCodex, Agent: &fakeAgent{}},
+			{Name: "doctor", Match: []string{"약"}, Backend: BackendCodex, Agent: &fakeAgent{}},
 		},
 	}
 
@@ -135,10 +134,10 @@ func TestAgentRouterParticipants(t *testing.T) {
 	router := &AgentRouter{
 		defaultIndex: 0,
 		runners: []AgentRunner{
-			{Name: "general", Match: []string{"*"}, Backend: BackendCommand, Agent: &fakeAgent{}},
-			{Name: "coder", Match: []string{"코드"}, Backend: BackendCommand, Agent: &fakeAgent{}},
-			{Name: "critic", Match: []string{"검토"}, Backend: BackendCommand, Agent: &fakeAgent{}},
-			{Name: "teacher", Match: []string{"설명"}, Backend: BackendCommand, Agent: &fakeAgent{}},
+			{Name: "general", Match: []string{"*"}, Backend: BackendCodex, Agent: &fakeAgent{}},
+			{Name: "coder", Match: []string{"코드"}, Backend: BackendCodex, Agent: &fakeAgent{}},
+			{Name: "critic", Match: []string{"검토"}, Backend: BackendCodex, Agent: &fakeAgent{}},
+			{Name: "teacher", Match: []string{"설명"}, Backend: BackendCodex, Agent: &fakeAgent{}},
 		},
 	}
 
@@ -160,7 +159,7 @@ func TestAgentRouterParticipants(t *testing.T) {
 }
 
 func TestAgentRouterRouteTo(t *testing.T) {
-	router := NewSingleAgentRouter("general", "general", nil, &fakeAgent{}, BackendCommand)
+	router := NewSingleAgentRouter("general", "general", nil, &fakeAgent{}, BackendCodex)
 
 	route, err := router.RouteTo("GENERAL", "hello")
 	if err != nil {
@@ -212,8 +211,8 @@ func TestLoadAgentDefinitionsFromFile(t *testing.T) {
 	    {
 	      "name": "general",
 	      "description": "General assistant",
-	      "backend": "command",
-	      "command": ["/bin/sh", "-c", "cat"],
+	      "backend": "ollama",
+	      "ollama_model": "llama3.2",
 	      "match": ["*"]
 	    },
 	    {
@@ -229,15 +228,12 @@ func TestLoadAgentDefinitionsFromFile(t *testing.T) {
 	}
 
 	router, err := NewAgentRouter(Config{
-		AgentBackend:      BackendCodex,
+		AgentBackend:      BackendOllama,
 		AgentTimeout:      time.Second,
 		AgentSystemPrompt: "system",
 		AgentsFile:        path,
-		CodexBin:          "codex",
-		CodexWorkDir:      dir,
-		CodexSandbox:      "read-only",
-		CommandAllowlist:  map[string]struct{}{"sh": {}},
 		OllamaURL:         "http://localhost:11434",
+		OllamaModel:       "llama3.2",
 	})
 	if err != nil {
 		t.Fatalf("NewAgentRouter returned error: %v", err)
@@ -248,44 +244,6 @@ func TestLoadAgentDefinitionsFromFile(t *testing.T) {
 	}
 	if got := router.Route("로컬 모델로 답해줘").Runner.Name; got != "local" {
 		t.Fatalf("route mismatch: %q", got)
-	}
-}
-
-func TestConfigForAgentCommand(t *testing.T) {
-	cfg, err := configForAgent(Config{
-		AgentBackend:      BackendCodex,
-		AgentTimeout:      time.Second,
-		AgentSystemPrompt: "base",
-		CodexBin:          "codex",
-		CodexWorkDir:      ".",
-		CodexSandbox:      "read-only",
-		CommandAllowlist:  map[string]struct{}{"sh": {}},
-	}, AgentDefinition{
-		Name:         "shell",
-		Backend:      BackendCommand,
-		SystemPrompt: "agent prompt",
-		Command:      []string{"/bin/sh", "-c", "cat"},
-	})
-	if err != nil {
-		t.Fatalf("configForAgent returned error: %v", err)
-	}
-	if cfg.AgentBackend != BackendCommand || cfg.AgentSystemPrompt != "agent prompt" {
-		t.Fatalf("unexpected config: %#v", cfg)
-	}
-	if len(cfg.Command) != 3 || cfg.Command[0] != "/bin/sh" {
-		t.Fatalf("command mismatch: %#v", cfg.Command)
-	}
-
-	agent, err := NewAgent(cfg)
-	if err != nil {
-		t.Fatalf("NewAgent returned error: %v", err)
-	}
-	answer, err := agent.Ask(context.Background(), "hello")
-	if err != nil {
-		t.Fatalf("Ask returned error: %v", err)
-	}
-	if !strings.Contains(answer, "hello") {
-		t.Fatalf("answer mismatch: %q", answer)
 	}
 }
 

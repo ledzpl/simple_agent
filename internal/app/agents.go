@@ -23,8 +23,6 @@ type AgentDefinition struct {
 	CodexModel   string `json:"codex_model"`
 	CodexSandbox string `json:"codex_sandbox"`
 
-	Command []string `json:"command"`
-
 	OllamaURL   string `json:"ollama_url"`
 	OllamaModel string `json:"ollama_model"`
 }
@@ -152,10 +150,6 @@ func configForAgent(base Config, def AgentDefinition) (Config, error) {
 	if value := strings.TrimSpace(def.CodexSandbox); value != "" {
 		cfg.CodexSandbox = value
 	}
-	if def.Command != nil {
-		cfg.Command = append([]string(nil), def.Command...)
-	}
-
 	if value := strings.TrimSpace(def.OllamaURL); value != "" {
 		cfg.OllamaURL = value
 	}

@@ -40,22 +40,6 @@ func TestParseAllowedUserIDs(t *testing.T) {
 	}
 }
 
-func TestValidateCommandAllowed(t *testing.T) {
-	allowlist, err := parseCommandAllowlist("chatgpt,/opt/bin/assistant")
-	if err != nil {
-		t.Fatalf("parseCommandAllowlist returned error: %v", err)
-	}
-	if err := validateCommandAllowed([]string{"/usr/local/bin/chatgpt"}, allowlist); err != nil {
-		t.Fatalf("expected basename allowlist match: %v", err)
-	}
-	if err := validateCommandAllowed([]string{"/tmp/unknown"}, allowlist); err == nil {
-		t.Fatal("expected disallowed command error")
-	}
-	if err := validateCommandAllowed([]string{"chatgpt"}, nil); err == nil {
-		t.Fatal("expected missing allowlist error")
-	}
-}
-
 func TestValidateAgentConfigRejectsDangerFullAccess(t *testing.T) {
 	err := validateAgentConfig(Config{
 		AgentBackend: BackendCodex,

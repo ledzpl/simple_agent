@@ -46,7 +46,7 @@ Optional:
 - `ENV_FILE`: dotenv file path loaded at startup. Default: `.env`.
 - `TELEGRAM_ALLOWED_USER_IDS`: comma-separated Telegram user ids allowed to run the local agent.
 - `TELEGRAM_ALLOW_GROUPS`: allow group/supergroup chats after chat allowlist checks. Default: `false`.
-- `AGENT_BACKEND`: `codex`, `ollama`, or `command`. Default: `codex`.
+- `AGENT_BACKEND`: `codex` or `ollama`. Default: `codex`.
 - `AGENT_TIMEOUT`: local agent timeout. Default: `5m`.
 - `AGENT_SYSTEM_PROMPT`: optional instruction prepended to every Telegram message.
 - `AGENTS_FILE`: optional JSON file that defines multiple named agents. Default: `agents.json`; missing default file is ignored.
@@ -95,7 +95,7 @@ Each agent can set:
 - `examples`: optional example user messages. Shared terms with the incoming message add a lower-priority routing score.
 - `system_prompt`: prompt used only for that agent.
 - `backend`: optional override. If omitted, the agent uses the global `AGENT_BACKEND`.
-- Backend-specific fields such as `codex_workdir`, `codex_sandbox`, `ollama_model`, or `command` only when that agent intentionally overrides the global backend behavior.
+- Backend-specific fields such as `codex_workdir`, `codex_sandbox`, or `ollama_model` only when that agent intentionally overrides the global backend behavior.
 
 If an agent file omits `default`, its first agent is used.
 
@@ -144,19 +144,6 @@ Codex backend:
 - `CODEX_WORKDIR`: working directory passed to `codex exec -C`. Default: current directory.
 - `CODEX_SANDBOX`: `read-only` or `workspace-write`. Default: `read-only`. Legacy `seatbelt` is treated as `read-only`; `danger-full-access` is rejected.
 - `CODEX_MODEL`: optional Codex model.
-
-Command backend:
-
-- `LOCAL_AGENT_COMMAND`: command that receives the prompt on stdin and writes the answer to stdout.
-- `LOCAL_AGENT_COMMAND_ALLOWLIST`: required comma-separated executable allowlist for `AGENT_BACKEND=command` and per-agent command overrides. Entries match either exact path or basename.
-
-Example:
-
-```sh
-AGENT_BACKEND=command
-LOCAL_AGENT_COMMAND='chatgpt'
-LOCAL_AGENT_COMMAND_ALLOWLIST=chatgpt
-```
 
 Ollama backend:
 
@@ -213,10 +200,8 @@ Treat this as remote access to a local agent. Keep these defaults unless you hav
 - Keep `CODEX_SANDBOX=read-only` for Codex.
 - Recognized destructive commands and imperative deletion requests require an explicit `/confirm <id>`. This check supplements, but does not replace, backend sandboxing.
 - `danger-full-access` is rejected for Codex, and non-interactive Codex runs cannot request approval escalation.
-- Set `LOCAL_AGENT_COMMAND_ALLOWLIST` when using `AGENT_BACKEND=command`; startup fails without it.
 - The memory directory stores Telegram messages and agent replies in plain JSONL. Keep it out of Git and protect the host account.
 - `.telegram-state` stores the Telegram offset and recent job requests in plain JSON. Protect it with the same care as the memory directory.
-- Be careful with `AGENT_BACKEND=command`; it intentionally runs the configured local program.
 
 ## Operations
 

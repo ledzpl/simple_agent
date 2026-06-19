@@ -30,9 +30,9 @@ func TestAnswerWithDebate(t *testing.T) {
 	router := &AgentRouter{
 		defaultIndex: 0,
 		runners: []AgentRunner{
-			{Name: "general", Description: "general", Match: []string{"*"}, Backend: BackendCommand, Agent: general},
-			{Name: "coder", Description: "coder", Match: []string{"코드"}, Backend: BackendCommand, Agent: coder},
-			{Name: "critic", Description: "critic", Match: []string{"검토"}, Backend: BackendCommand, Agent: critic},
+			{Name: "general", Description: "general", Match: []string{"*"}, Backend: BackendCodex, Agent: general},
+			{Name: "coder", Description: "coder", Match: []string{"코드"}, Backend: BackendCodex, Agent: coder},
+			{Name: "critic", Description: "critic", Match: []string{"검토"}, Backend: BackendCodex, Agent: critic},
 		},
 	}
 	app := NewAppWithRouter(Config{AgentTimeout: time.Second}, nil, router, nil)

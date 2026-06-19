@@ -76,7 +76,7 @@ not json
 	app := NewAppWithRouter(
 		Config{AllowedChatIDs: map[int64]struct{}{123: {}}},
 		&TelegramBot{baseURL: server.URL, client: server.Client()},
-		NewSingleAgentRouter("default", "default", []string{"*"}, &fakeAgent{}, BackendCommand),
+		NewSingleAgentRouter("default", "default", []string{"*"}, &fakeAgent{}, BackendCodex),
 		store,
 	)
 	app.handleMemoryExport(context.Background(), TelegramMessage{MessageID: 7, Chat: TelegramChat{ID: 123}})
