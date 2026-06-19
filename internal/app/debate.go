@@ -8,7 +8,6 @@ import (
 )
 
 type DebateTurn struct {
-	Round     int
 	Stage     string
 	AgentName string
 	Backend   string
@@ -22,72 +21,84 @@ type DebateResult struct {
 }
 
 func (a *App) answerWithDebate(ctx context.Context, chatID int64, userMessage, memoryContext string) (DebateResult, error) {
-	participants := a.router.Participants(userMessage, debateMaxAgents)
-	if len(participants) == 0 {
-		return DebateResult{}, fmt.Errorf("no debate participants are configured")
+	allParticipants := a.router.Participants(userMessage, debateMaxAgents)
+	synthesizer := a.router.Default()
+
+	// Exclude synthesizer from analysis so it can review without bias toward its own output.
+	var participants []AgentParticipant
+	for _, p := range allParticipants {
+		if p.Runner.Name != synthesizer.Name {
+			participants = append(participants, p)
+		}
 	}
-	if len(participants) == 1 {
+
+	if len(participants) == 0 {
 		prompt := promptWithMemory(memoryContext, userMessage)
-		answer, err := participants[0].Runner.Agent.Ask(ctx, prompt)
+		answer, err := synthesizer.Agent.Ask(ctx, prompt)
 		if err != nil {
 			return DebateResult{}, err
 		}
 		return DebateResult{
 			Final:       answer,
-			Synthesizer: participants[0].Runner,
+			Synthesizer: synthesizer,
 		}, nil
 	}
 
-	rounds := debateRounds
+	// analyses + review + synthesis
+	total := len(participants) + 2
 
 	var transcript []DebateTurn
-	for round := 1; round <= rounds; round++ {
-		for _, participant := range participants {
-			visibleTranscript := transcript
-			if round == 1 {
-				// First-pass analyses stay independent so earlier agents do not anchor later ones.
-				visibleTranscript = nil
-			}
-			prompt := buildDebateTurnPrompt(userMessage, memoryContext, visibleTranscript, participant, round, rounds)
-			answer, err := participant.Runner.Agent.Ask(ctx, prompt)
-			if err != nil {
-				return DebateResult{}, fmt.Errorf("%s debate turn: %w", participant.Runner.Name, err)
-			}
-			turn := DebateTurn{
-				Round:     round,
-				Stage:     "analysis",
-				AgentName: participant.Runner.Name,
-				Backend:   participant.Runner.Backend,
-				Content:   strings.TrimSpace(answer),
-			}
-			transcript = append(transcript, turn)
-			a.sendDebateTurn(ctx, chatID, turn, len(transcript), len(participants)*rounds+1)
+	for _, participant := range participants {
+		prompt := buildDebateTurnPrompt(userMessage, memoryContext, participant)
+		answer, err := participant.Runner.Agent.Ask(ctx, prompt)
+		if err != nil {
+			log.Printf("debate turn skipped agent=%s chat_id=%d: %v", participant.Runner.Name, chatID, err)
+			continue
 		}
+		turn := DebateTurn{
+			Stage:     "analysis",
+			AgentName: participant.Runner.Name,
+			Backend:   participant.Runner.Backend,
+			Content:   strings.TrimSpace(answer),
+		}
+		transcript = append(transcript, turn)
+		a.sendDebateTurn(ctx, chatID, turn, len(transcript), total)
 	}
 
-	synthesizer := a.router.Default()
+	if len(transcript) == 0 {
+		return DebateResult{}, fmt.Errorf("all debate participants failed")
+	}
+
 	reviewPrompt := buildDebateReviewPrompt(userMessage, memoryContext, transcript)
 	review, err := synthesizer.Agent.Ask(ctx, reviewPrompt)
 	if err != nil {
 		return DebateResult{}, fmt.Errorf("%s review: %w", synthesizer.Name, err)
 	}
 	reviewTurn := DebateTurn{
-		Round:     rounds + 1,
 		Stage:     "review",
 		AgentName: synthesizer.Name,
 		Backend:   synthesizer.Backend,
 		Content:   strings.TrimSpace(review),
 	}
 	transcript = append(transcript, reviewTurn)
-	a.sendDebateTurn(ctx, chatID, reviewTurn, len(transcript), len(participants)*rounds+1)
+	a.sendDebateTurn(ctx, chatID, reviewTurn, len(transcript), total)
 
 	finalPrompt := buildDebateSynthesisPrompt(userMessage, memoryContext, transcript)
 	final, err := synthesizer.Agent.Ask(ctx, finalPrompt)
 	if err != nil {
 		return DebateResult{}, fmt.Errorf("%s synthesis: %w", synthesizer.Name, err)
 	}
+	synthesisTurn := DebateTurn{
+		Stage:     "synthesis",
+		AgentName: synthesizer.Name,
+		Backend:   synthesizer.Backend,
+		Content:   strings.TrimSpace(final),
+	}
+	transcript = append(transcript, synthesisTurn)
+	a.sendDebateTurn(ctx, chatID, synthesisTurn, len(transcript), total)
+
 	return DebateResult{
-		Final:       strings.TrimSpace(final),
+		Final:       synthesisTurn.Content,
 		Synthesizer: synthesizer,
 		Transcript:  transcript,
 	}, nil
@@ -97,18 +108,13 @@ func (a *App) sendDebateTurn(ctx context.Context, chatID int64, turn DebateTurn,
 	if a.bot == nil {
 		return
 	}
-	stage := turn.Stage
-	if stage == "" {
-		stage = fmt.Sprintf("round %d", turn.Round)
-	}
-	message := fmt.Sprintf("[debate %d/%d · %s · %s]\n%s", index, total, stage, turn.AgentName, turn.Content)
+	message := fmt.Sprintf("[debate %d/%d · %s · %s]\n%s", index, total, turn.Stage, turn.AgentName, turn.Content)
 	if err := a.sendMessage(ctx, chatID, message, 0); err != nil {
-		// Debate transcript visibility is useful but should not block the final answer.
 		log.Printf("send debate transcript failed chat_id=%d agent=%s: %v", chatID, turn.AgentName, err)
 	}
 }
 
-func buildDebateTurnPrompt(userMessage, memoryContext string, transcript []DebateTurn, participant AgentParticipant, round, totalRounds int) string {
+func buildDebateTurnPrompt(userMessage, memoryContext string, participant AgentParticipant) string {
 	var out strings.Builder
 	out.WriteString("You are producing an expert analysis for a multi-agent answer.\n")
 	out.WriteString("Analyze independently from your assigned role. Do not merely restate the request or imitate other roles.\n")
@@ -126,7 +132,6 @@ func buildDebateTurnPrompt(userMessage, memoryContext string, transcript []Debat
 		out.WriteString(participant.Reason)
 		out.WriteByte('\n')
 	}
-	out.WriteString(fmt.Sprintf("Round: %d of %d\n", round, totalRounds))
 	if strings.TrimSpace(memoryContext) != "" {
 		out.WriteString("\nMemory context:\n")
 		out.WriteString(strings.TrimSpace(memoryContext))
@@ -135,11 +140,6 @@ func buildDebateTurnPrompt(userMessage, memoryContext string, transcript []Debat
 	out.WriteString("\nUser message:\n")
 	out.WriteString(strings.TrimSpace(userMessage))
 	out.WriteByte('\n')
-	if len(transcript) > 0 {
-		out.WriteString("\nDebate so far:\n")
-		out.WriteString(formatDebateTranscript(transcript))
-		out.WriteByte('\n')
-	}
 	out.WriteString("\nYour turn:")
 	return out.String()
 }
@@ -185,11 +185,7 @@ func buildDebateSynthesisPrompt(userMessage, memoryContext string, transcript []
 func formatDebateTranscript(transcript []DebateTurn) string {
 	var out strings.Builder
 	for _, turn := range transcript {
-		stage := turn.Stage
-		if stage == "" {
-			stage = fmt.Sprintf("round %d", turn.Round)
-		}
-		out.WriteString(fmt.Sprintf("[%s · %s]\n%s\n\n", stage, turn.AgentName, strings.TrimSpace(turn.Content)))
+		out.WriteString(fmt.Sprintf("[%s · %s]\n%s\n\n", turn.Stage, turn.AgentName, strings.TrimSpace(turn.Content)))
 	}
 	return strings.TrimSpace(out.String())
 }

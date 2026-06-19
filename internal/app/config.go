@@ -22,9 +22,8 @@ const (
 	maxRequestsPerMinute = 10
 	jobHistoryLimit      = 20
 	jobProgressInterval  = 60 * time.Second
-	debateMaxAgents      = 4
-	debateRounds         = 1
-	memoryMaxMessages    = 20
+	debateMaxAgents   = 4
+	memoryMaxMessages = 20
 	memoryMaxChars       = 12000
 	memoryRefineMaxChars = 1000
 	memoryRefineTimeout  = 90 * time.Second
