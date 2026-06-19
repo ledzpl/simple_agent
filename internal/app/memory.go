@@ -2,6 +2,7 @@ package app
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -12,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -42,6 +44,7 @@ type MemoryLoadIssue struct {
 }
 
 type MemoryStore struct {
+	mu          sync.Mutex
 	dir         string
 	maxMessages int
 	maxChars    int
@@ -70,7 +73,12 @@ func (s *MemoryStore) LoadDetailed(ctx context.Context, chatID int64) ([]MemoryM
 	if s == nil {
 		return nil, nil, nil
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.loadDetailedLocked(ctx, chatID)
+}
 
+func (s *MemoryStore) loadDetailedLocked(ctx context.Context, chatID int64) ([]MemoryMessage, []MemoryLoadIssue, error) {
 	file, err := os.Open(s.path(chatID))
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -165,18 +173,14 @@ func (s *MemoryStore) AppendNoteWithID(ctx context.Context, chatID int64, id, co
 	if s == nil {
 		return "", nil
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	select {
 	case <-ctx.Done():
 		return "", ctx.Err()
 	default:
 	}
-
-	file, err := os.OpenFile(s.path(chatID), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
-	if err != nil {
-		return "", fmt.Errorf("open memory for append: %w", err)
-	}
-	defer file.Close()
 
 	id = strings.TrimSpace(id)
 	if id == "" {
@@ -193,74 +197,171 @@ func (s *MemoryStore) AppendNoteWithID(ctx context.Context, chatID int64, id, co
 		return "", nil
 	}
 
-	encoder := json.NewEncoder(file)
-	if err := encoder.Encode(entry); err != nil {
-		return "", fmt.Errorf("write memory: %w", err)
+	if err := s.appendMessagesLocked(chatID, []MemoryMessage{entry}); err != nil {
+		return "", err
 	}
 	return id, nil
+}
+
+func (s *MemoryStore) AppendExchangeWithID(ctx context.Context, chatID int64, id, userMessage, assistantMessage string) (string, error) {
+	return s.AppendExchangeWithNoteID(ctx, chatID, id, userMessage, assistantMessage, "")
+}
+
+func (s *MemoryStore) AppendExchangeWithNoteID(ctx context.Context, chatID int64, id, userMessage, assistantMessage, note string) (string, error) {
+	if s == nil {
+		return "", nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	default:
+	}
+
+	id = strings.TrimSpace(id)
+	if id == "" {
+		id = newMemoryID()
+	}
+	createdAt := time.Now().UTC()
+	entries := make([]MemoryMessage, 0, 2)
+	if content := redactMemoryContent(strings.TrimSpace(userMessage)); content != "" {
+		entries = append(entries, MemoryMessage{
+			ID:        id,
+			Role:      RoleUser,
+			Content:   content,
+			CreatedAt: createdAt,
+		})
+	}
+	if content := redactMemoryContent(strings.TrimSpace(assistantMessage)); content != "" {
+		entries = append(entries, MemoryMessage{
+			ID:        id,
+			Role:      RoleAssistant,
+			Content:   content,
+			CreatedAt: createdAt,
+		})
+	}
+	if content := redactMemoryContent(strings.TrimSpace(note)); content != "" {
+		entries = append(entries, MemoryMessage{
+			ID:        id,
+			Role:      RoleMemory,
+			Content:   content,
+			CreatedAt: createdAt,
+		})
+	}
+	if len(entries) == 0 {
+		return "", nil
+	}
+	if err := s.appendMessagesLocked(chatID, entries); err != nil {
+		return "", err
+	}
+	return id, nil
+}
+
+func (s *MemoryStore) appendMessagesLocked(chatID int64, messages []MemoryMessage) error {
+	var data bytes.Buffer
+	encoder := json.NewEncoder(&data)
+	for _, message := range messages {
+		if err := encoder.Encode(message); err != nil {
+			return fmt.Errorf("encode memory: %w", err)
+		}
+	}
+
+	file, err := os.OpenFile(s.path(chatID), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	if err != nil {
+		return fmt.Errorf("open memory for append: %w", err)
+	}
+	defer file.Close()
+	if _, err := file.Write(data.Bytes()); err != nil {
+		return fmt.Errorf("write memory: %w", err)
+	}
+	return nil
 }
 
 func (s *MemoryStore) Delete(chatID int64, index int) error {
 	if s == nil {
 		return nil
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if index <= 0 {
 		return fmt.Errorf("memory index must be positive")
 	}
-	messages, _, err := s.LoadDetailed(context.Background(), chatID)
+	messages, _, err := s.loadDetailedLocked(context.Background(), chatID)
 	if err != nil {
 		return err
 	}
 	if index > len(messages) {
 		return fmt.Errorf("memory index %d is out of range; there are %d memories", index, len(messages))
 	}
-	messages = append(messages[:index-1], messages[index:]...)
-	return s.rewrite(chatID, messages)
+	target := messages[index-1]
+	if target.ID == "" {
+		messages = append(messages[:index-1], messages[index:]...)
+	} else {
+		messages = filterMemoryID(messages, target.ID)
+	}
+	return s.rewriteLocked(chatID, messages)
 }
 
 func (s *MemoryStore) DeleteLast(chatID int64) error {
 	if s == nil {
 		return nil
 	}
-	messages, _, err := s.LoadDetailed(context.Background(), chatID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	messages, _, err := s.loadDetailedLocked(context.Background(), chatID)
 	if err != nil {
 		return err
 	}
 	if len(messages) == 0 {
 		return fmt.Errorf("there are no stored memories")
 	}
-	return s.rewrite(chatID, messages[:len(messages)-1])
+	target := messages[len(messages)-1]
+	if target.ID == "" {
+		return s.rewriteLocked(chatID, messages[:len(messages)-1])
+	}
+	return s.rewriteLocked(chatID, filterMemoryID(messages, target.ID))
 }
 
 func (s *MemoryStore) DeleteByID(chatID int64, id string) error {
 	if s == nil {
 		return nil
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return fmt.Errorf("memory id is required")
 	}
-	messages, _, err := s.LoadDetailed(context.Background(), chatID)
+	messages, _, err := s.loadDetailedLocked(context.Background(), chatID)
 	if err != nil {
 		return err
 	}
-	filtered := messages[:0]
-	deleted := false
-	for _, message := range messages {
-		if message.ID == id {
-			deleted = true
-			continue
-		}
-		filtered = append(filtered, message)
-	}
-	if !deleted {
+	filtered := filterMemoryID(messages, id)
+	if len(filtered) == len(messages) {
 		return fmt.Errorf("memory id %q was not found", id)
 	}
-	return s.rewrite(chatID, filtered)
+	return s.rewriteLocked(chatID, filtered)
+}
+
+func filterMemoryID(messages []MemoryMessage, id string) []MemoryMessage {
+	filtered := make([]MemoryMessage, 0, len(messages))
+	for _, message := range messages {
+		if message.ID != id {
+			filtered = append(filtered, message)
+		}
+	}
+	return filtered
 }
 
 func (s *MemoryStore) ExportJSONL(ctx context.Context, chatID int64) (string, []MemoryLoadIssue, error) {
-	messages, issues, err := s.LoadDetailed(ctx, chatID)
+	if s == nil {
+		return "", nil, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	messages, issues, err := s.loadDetailedLocked(ctx, chatID)
 	if err != nil {
 		return "", nil, err
 	}
@@ -275,16 +376,21 @@ func (s *MemoryStore) ExportJSONL(ctx context.Context, chatID int64) (string, []
 }
 
 func (s *MemoryStore) Repair(ctx context.Context, chatID int64) (MemoryStats, error) {
-	messages, issues, err := s.LoadDetailed(ctx, chatID)
+	if s == nil {
+		return MemoryStats{}, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	messages, issues, err := s.loadDetailedLocked(ctx, chatID)
 	if err != nil {
 		return MemoryStats{}, err
 	}
 	if len(issues) > 0 {
-		if err := s.rewrite(chatID, messages); err != nil {
+		if err := s.rewriteLocked(chatID, messages); err != nil {
 			return MemoryStats{}, err
 		}
 	}
-	stats, err := s.Stats(ctx, chatID)
+	stats, err := s.statsLocked(ctx, chatID)
 	if err != nil {
 		return MemoryStats{}, err
 	}
@@ -296,6 +402,8 @@ func (s *MemoryStore) Clear(chatID int64) error {
 	if s == nil {
 		return nil
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := os.Remove(s.path(chatID)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("clear memory: %w", err)
 	}
@@ -306,9 +414,14 @@ func (s *MemoryStore) Stats(ctx context.Context, chatID int64) (MemoryStats, err
 	if s == nil {
 		return MemoryStats{}, nil
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.statsLocked(ctx, chatID)
+}
 
+func (s *MemoryStore) statsLocked(ctx context.Context, chatID int64) (MemoryStats, error) {
 	path := s.path(chatID)
-	messages, issues, err := s.LoadDetailed(ctx, chatID)
+	messages, issues, err := s.loadDetailedLocked(ctx, chatID)
 	if err != nil {
 		return MemoryStats{}, err
 	}
@@ -327,7 +440,7 @@ func (s *MemoryStore) path(chatID int64) string {
 	return filepath.Join(s.dir, fmt.Sprintf("%d.jsonl", chatID))
 }
 
-func (s *MemoryStore) rewrite(chatID int64, messages []MemoryMessage) error {
+func (s *MemoryStore) rewriteLocked(chatID int64, messages []MemoryMessage) error {
 	path := s.path(chatID)
 	if len(messages) == 0 {
 		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {

@@ -27,13 +27,15 @@ func (a *App) rememberWithAgentID(ctx context.Context, agent Agent, chatID int64
 	}
 
 	note, err := a.refinedMemoryNote(ctx, agent, userMessage, assistantMessage)
-	if err != nil {
-		return "", err
+	refineErr := err
+	memoryID, appendErr := a.memory.AppendExchangeWithNoteID(context.Background(), chatID, memoryID, userMessage, assistantMessage, note)
+	if appendErr != nil {
+		return "", appendErr
 	}
-	if note == "" {
-		return "", nil
+	if refineErr != nil {
+		return memoryID, refineErr
 	}
-	return a.memory.AppendNoteWithID(ctx, chatID, memoryID, note)
+	return memoryID, nil
 }
 
 func (a *App) refinedMemoryNote(ctx context.Context, agent Agent, userMessage, assistantMessage string) (string, error) {

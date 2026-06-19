@@ -60,6 +60,31 @@ func TestDangerousActionRequiresConfirmation(t *testing.T) {
 	}
 }
 
+func TestDangerousActionPatternsCoverCommandsAndImperativeRequests(t *testing.T) {
+	for _, input := range []string{
+		"rm -rf .",
+		"find ./tmp -delete",
+		"git restore .",
+		"docker system prune -af",
+		"DROP TABLE users",
+		"프로덕션 데이터베이스를 삭제해줘",
+		"please delete the repository",
+	} {
+		if !containsDangerousAction(input) {
+			t.Errorf("expected dangerous action detection for %q", input)
+		}
+	}
+	for _, input := range []string{
+		"rm 명령이 무엇인지 설명해줘",
+		"파일 삭제 정책을 문서로 정리해줘",
+		"git status를 실행해줘",
+	} {
+		if containsDangerousAction(input) {
+			t.Errorf("unexpected dangerous action detection for %q", input)
+		}
+	}
+}
+
 func TestRetryDangerousActionRequiresFreshConfirmation(t *testing.T) {
 	app := NewApp(Config{
 		AllowedChatIDs: map[int64]struct{}{123: {}},
@@ -99,8 +124,8 @@ func TestRetryDangerousActionRequiresFreshConfirmation(t *testing.T) {
 
 	app.jobs.mu.Lock()
 	defer app.jobs.mu.Unlock()
-	if len(app.jobs.active[123]) != 0 || len(app.jobs.queued[123]) != 0 {
-		t.Fatalf("dangerous retry should not enqueue before confirmation: active=%#v queued=%#v", app.jobs.active[123], app.jobs.queued[123])
+	if len(app.jobs.active[123]) != 0 || app.jobs.queuedCountForChatLocked(123) != 0 {
+		t.Fatalf("dangerous retry should not enqueue before confirmation: active=%#v queued=%#v", app.jobs.active[123], app.jobs.queued)
 	}
 }
 

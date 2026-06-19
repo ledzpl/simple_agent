@@ -61,13 +61,14 @@ printf 'fake answer\n' > "$out"
 		t.Fatalf("read args: %v", err)
 	}
 	args := string(argsData)
-	if strings.Contains(args, "--ask-for-approval") {
-		t.Fatalf("codex exec args contain unsupported --ask-for-approval:\n%s", args)
-	}
-	for _, want := range []string{"exec\n", "--skip-git-repo-check\n", "--sandbox\n", "read-only\n", "-o\n", "-\n"} {
+	for _, want := range []string{"exec\n", "--ephemeral\n", "--skip-git-repo-check\n", "--ask-for-approval\n", "never\n", "--sandbox\n", "read-only\n", "-o\n", "-\n"} {
 		if !strings.Contains(args, want) {
 			t.Fatalf("codex args missing %q in:\n%s", want, args)
 		}
+	}
+	lines := strings.Fields(args)
+	if approvalIndex := indexOf(lines, "--ask-for-approval"); approvalIndex < 0 || approvalIndex > indexOf(lines, "exec") {
+		t.Fatalf("--ask-for-approval must be passed before exec:\n%s", args)
 	}
 
 	stdinData, err := os.ReadFile(stdinPath)
@@ -77,6 +78,15 @@ printf 'fake answer\n' > "$out"
 	if !strings.Contains(string(stdinData), "system") || !strings.Contains(string(stdinData), "hello") {
 		t.Fatalf("prompt not passed through stdin:\n%s", stdinData)
 	}
+}
+
+func indexOf(values []string, target string) int {
+	for i, value := range values {
+		if value == target {
+			return i
+		}
+	}
+	return -1
 }
 
 func TestOllamaAgentAsk(t *testing.T) {

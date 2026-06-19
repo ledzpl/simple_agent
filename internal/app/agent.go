@@ -49,17 +49,21 @@ func (a CodexAgent) Ask(ctx context.Context, prompt string) (string, error) {
 	defer os.Remove(outputPath)
 
 	args := []string{
-		"exec",
-		"--skip-git-repo-check",
-		"--color", "never",
+		"--ask-for-approval", "never",
 		"--sandbox", a.cfg.CodexSandbox,
 		"-C", a.cfg.CodexWorkDir,
-		"-o", outputPath,
 	}
 	if a.cfg.CodexModel != "" {
 		args = append(args, "-m", a.cfg.CodexModel)
 	}
-	args = append(args, "-")
+	args = append(args,
+		"exec",
+		"--ephemeral",
+		"--skip-git-repo-check",
+		"--color", "never",
+		"-o", outputPath,
+		"-",
+	)
 
 	cmd := exec.CommandContext(ctx, a.cfg.CodexBin, args...)
 	cmd.Stdin = strings.NewReader(buildPrompt(a.cfg.AgentSystemPrompt, prompt))

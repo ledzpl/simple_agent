@@ -35,7 +35,7 @@ func Run(args []string) error {
 	if err != nil {
 		return err
 	}
-	state, err := NewStateStore(stateDir)
+	state, err := NewStateStore(cfg.StateDir)
 	if err != nil {
 		return err
 	}
@@ -74,7 +74,7 @@ func checkConfig() error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("config ok\nagents: %d\ndefault_agent: %s\nbackend: %s\nallowed_chats: %d\nallowed_users: %d\nallow_groups: %t\ndebate: %t\nmemory: %t\n",
+	fmt.Printf("config ok\nagents: %d\ndefault_agent: %s\nbackend: %s\nallowed_chats: %d\nallowed_users: %d\nallow_groups: %t\ndebate: %t\nmemory: %t\nstate_dir: %s\n",
 		len(router.Runners()),
 		router.Default().Name,
 		cfg.AgentBackend,
@@ -83,6 +83,7 @@ func checkConfig() error {
 		cfg.AllowGroupChats,
 		cfg.DebateEnabled,
 		cfg.MemoryEnabled,
+		cfg.StateDir,
 	)
 	return nil
 }

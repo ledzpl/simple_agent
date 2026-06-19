@@ -236,6 +236,7 @@ func TestLoadAgentDefinitionsFromFile(t *testing.T) {
 		CodexBin:          "codex",
 		CodexWorkDir:      dir,
 		CodexSandbox:      "read-only",
+		CommandAllowlist:  map[string]struct{}{"sh": {}},
 		OllamaURL:         "http://localhost:11434",
 	})
 	if err != nil {
@@ -258,6 +259,7 @@ func TestConfigForAgentCommand(t *testing.T) {
 		CodexBin:          "codex",
 		CodexWorkDir:      ".",
 		CodexSandbox:      "read-only",
+		CommandAllowlist:  map[string]struct{}{"sh": {}},
 	}, AgentDefinition{
 		Name:         "shell",
 		Backend:      BackendCommand,

@@ -8,7 +8,6 @@ tmp/
 .env.*
 !.env.example
 
-agents.json
 /telegram-local-agent
 bin/
 TODO.md

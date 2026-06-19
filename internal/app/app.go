@@ -7,6 +7,7 @@ import (
 	"log"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -19,6 +20,7 @@ type App struct {
 
 	jobs              *JobManager
 	confirmations     *ConfirmationStore
+	debateMu          sync.RWMutex
 	debateTranscripts map[string]string
 }
 
@@ -37,6 +39,7 @@ func NewAppWithRouter(cfg Config, bot *TelegramBot, router *AgentRouter, memory 
 	}
 	app.jobs = NewJobManager(maxActiveJobsPerChat, app.executeJob)
 	app.jobs.SetHistoryLimit(jobHistoryLimit)
+	app.jobs.SetLimits(maxActiveJobsGlobal, maxQueuedJobsPerChat, maxQueuedJobsGlobal, maxRequestsPerMinute)
 	return app
 }
 
@@ -190,25 +193,29 @@ func (a *App) handleMessage(ctx context.Context, msg TelegramMessage) {
 		return
 	}
 
-	a.enqueueAgentJob(ctx, msg, text, forceDebate)
+	_, _ = a.enqueueAgentJob(ctx, msg, text, forceDebate)
 }
 
-func (a *App) enqueueAgentJob(ctx context.Context, msg TelegramMessage, text string, forceDebate bool) JobSnapshot {
+func (a *App) enqueueAgentJob(ctx context.Context, msg TelegramMessage, text string, forceDebate bool) (JobSnapshot, error) {
 	userID := int64(0)
 	if msg.From != nil {
 		userID = msg.From.ID
 	}
-	snapshot := a.jobs.Enqueue(ctx, &AgentJob{
+	snapshot, err := a.jobs.Enqueue(ctx, &AgentJob{
 		ChatID:      msg.Chat.ID,
 		UserID:      userID,
 		ReplyTo:     msg.MessageID,
 		Message:     text,
 		ForceDebate: forceDebate,
 	})
+	if err != nil {
+		_ = a.sendMessage(ctx, msg.Chat.ID, jobEnqueueError(err), msg.MessageID)
+		return JobSnapshot{}, err
+	}
 	if snapshot.State == JobQueued {
 		_ = a.sendMessageWithMarkup(ctx, msg.Chat.ID, fmt.Sprintf("작업이 대기열에 추가되었습니다.\njob: %s\n/status 로 상태를 볼 수 있고 /cancel %s 로 취소할 수 있습니다.", snapshot.ID, snapshot.ID), msg.MessageID, jobQueuedActions(snapshot.ID))
 	}
-	return snapshot
+	return snapshot, nil
 }
 
 func (a *App) executeJob(ctx context.Context, job *AgentJob) {
@@ -290,8 +297,8 @@ func (a *App) executeJob(ctx context.Context, job *AgentJob) {
 	if _, err := a.rememberWithAgentID(ctx, answerAgent.Agent, job.ChatID, route.Message, safeAnswer, memoryID); err != nil {
 		log.Printf("memory append failed chat_id=%d: %v", job.ChatID, err)
 	}
-	a.jobs.Finish(job, JobSucceeded, answerAgent.Name, "")
 	a.updateJobProgress(context.Background(), job, progressID, formatJobProgress(job, "작업이 완료되었습니다.", ""), jobDoneActions(job.ID))
+	a.jobs.Finish(job, JobSucceeded, answerAgent.Name, "")
 }
 
 func (a *App) handleCallback(ctx context.Context, query TelegramCallbackQuery) {
@@ -326,7 +333,7 @@ func (a *App) handleCallback(ctx context.Context, query TelegramCallbackQuery) {
 		a.handleMessage(ctx, *query.Message.ReplyToMessage)
 	case strings.HasPrefix(query.Data, "debate_show:"):
 		id := strings.TrimPrefix(query.Data, "debate_show:")
-		transcript := a.debateTranscripts[id]
+		transcript := a.loadDebateTranscript(id)
 		if strings.TrimSpace(transcript) == "" {
 			a.answerCallback(ctx, query.ID, "토론 기록이 만료되었습니다.")
 			return
@@ -358,13 +365,17 @@ func (a *App) handleCallback(ctx context.Context, query TelegramCallbackQuery) {
 			_ = a.sendMessage(ctx, chatID, fmt.Sprintf("이전 작업 요청이 위험할 수 있습니다. 다시 실행하려면 다음 명령을 보내세요.\n/confirm %s", confirmation.ID), query.Message.MessageID)
 			return
 		}
-		snapshot := a.jobs.Enqueue(ctx, &AgentJob{
+		snapshot, err := a.jobs.Enqueue(ctx, &AgentJob{
 			ChatID:      source.ChatID,
 			UserID:      source.UserID,
 			ReplyTo:     source.ReplyTo,
 			Message:     source.Message,
 			ForceDebate: source.ForceDebate,
 		})
+		if err != nil {
+			a.answerCallback(ctx, query.ID, jobEnqueueError(err))
+			return
+		}
 		a.answerCallback(ctx, query.ID, "작업을 다시 등록했습니다.")
 		if snapshot.State == JobQueued {
 			_ = a.sendMessageWithMarkup(ctx, chatID, fmt.Sprintf("작업을 다시 등록했습니다.\n%s", formatJobLine(snapshot)), query.Message.MessageID, jobQueuedActions(snapshot.ID))
@@ -495,12 +506,20 @@ func formatJobProgress(job *AgentJob, status, detail string) string {
 }
 
 func (a *App) storeDebateTranscript(transcript string) string {
+	a.debateMu.Lock()
+	defer a.debateMu.Unlock()
 	if len(a.debateTranscripts) > 100 {
 		a.debateTranscripts = map[string]string{}
 	}
 	id := strconv.FormatInt(time.Now().UnixNano(), 36)
 	a.debateTranscripts[id] = transcript
 	return id
+}
+
+func (a *App) loadDebateTranscript(id string) string {
+	a.debateMu.RLock()
+	defer a.debateMu.RUnlock()
+	return a.debateTranscripts[id]
 }
 
 func (a *App) shouldDebate(route AgentRoute, forceDebate bool) bool {
@@ -616,4 +635,15 @@ func truncate(text string, limit int) string {
 		return text
 	}
 	return string(runes[:limit]) + "..."
+}
+
+func jobEnqueueError(err error) string {
+	switch {
+	case errors.Is(err, ErrRateLimited):
+		return "요청이 너무 빠릅니다. 잠시 후 다시 시도하세요."
+	case errors.Is(err, ErrQueueFull):
+		return "작업 대기열이 가득 찼습니다. 기존 작업이 끝난 뒤 다시 시도하세요."
+	default:
+		return "작업을 등록하지 못했습니다.\n\n" + redactSecrets(err.Error())
+	}
 }

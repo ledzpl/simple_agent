@@ -2,8 +2,10 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -258,5 +260,110 @@ func TestMemoryDeleteByID(t *testing.T) {
 	}
 	if len(messages) != 1 || messages[0].ID != "answer-b" || messages[0].Content != "second answer memory" {
 		t.Fatalf("DeleteByID removed the wrong memory: %#v", messages)
+	}
+}
+
+func TestMemoryExchangeEntriesShareIDAndDeleteTogether(t *testing.T) {
+	store, err := NewMemoryStore(Config{
+		MemoryEnabled: true,
+		MemoryDir:     t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("NewMemoryStore returned error: %v", err)
+	}
+
+	ctx := context.Background()
+	id, err := store.AppendExchangeWithID(ctx, 123, "exchange-a", "D", "정답은 A. 텅스텐입니다.")
+	if err != nil {
+		t.Fatalf("AppendExchangeWithID returned error: %v", err)
+	}
+	if id != "exchange-a" {
+		t.Fatalf("exchange id = %q", id)
+	}
+	if _, err := store.AppendNoteWithID(ctx, 123, id, "퀴즈 1번 완료"); err != nil {
+		t.Fatalf("AppendNoteWithID returned error: %v", err)
+	}
+
+	messages, err := store.Load(ctx, 123)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if len(messages) != 3 {
+		t.Fatalf("expected three exchange records, got %#v", messages)
+	}
+	for _, message := range messages {
+		if message.ID != id {
+			t.Fatalf("exchange id mismatch: %#v", messages)
+		}
+	}
+
+	if err := store.DeleteByID(123, id); err != nil {
+		t.Fatalf("DeleteByID returned error: %v", err)
+	}
+	messages, err = store.Load(ctx, 123)
+	if err != nil {
+		t.Fatalf("Load after delete returned error: %v", err)
+	}
+	if len(messages) != 0 {
+		t.Fatalf("DeleteByID should remove the full exchange: %#v", messages)
+	}
+}
+
+func TestMemoryDeleteByIndexRemovesFullExchange(t *testing.T) {
+	store, err := NewMemoryStore(Config{
+		MemoryEnabled: true,
+		MemoryDir:     t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("NewMemoryStore returned error: %v", err)
+	}
+	ctx := context.Background()
+	if _, err := store.AppendExchangeWithID(ctx, 123, "exchange-a", "D", "정답은 A"); err != nil {
+		t.Fatalf("AppendExchangeWithID returned error: %v", err)
+	}
+	if _, err := store.AppendNoteWithID(ctx, 123, "exchange-a", "퀴즈 상태"); err != nil {
+		t.Fatalf("AppendNoteWithID returned error: %v", err)
+	}
+
+	if err := store.Delete(123, 2); err != nil {
+		t.Fatalf("Delete returned error: %v", err)
+	}
+	messages, err := store.Load(ctx, 123)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if len(messages) != 0 {
+		t.Fatalf("index deletion should remove the full exchange: %#v", messages)
+	}
+}
+
+func TestMemoryStoreConcurrentAppendsDoNotLoseEntries(t *testing.T) {
+	store, err := NewMemoryStore(Config{
+		MemoryEnabled: true,
+		MemoryDir:     t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("NewMemoryStore returned error: %v", err)
+	}
+
+	const count = 50
+	var wg sync.WaitGroup
+	for i := 0; i < count; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			if err := store.AppendNote(context.Background(), 123, fmt.Sprintf("note-%d", i)); err != nil {
+				t.Errorf("AppendNote(%d): %v", i, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	messages, err := store.Load(context.Background(), 123)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if len(messages) != count {
+		t.Fatalf("stored messages = %d, want %d", len(messages), count)
 	}
 }

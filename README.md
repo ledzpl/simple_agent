@@ -54,10 +54,12 @@ Optional:
 - `MEMORY_ENABLED`: store and reuse per-chat conversation history. Default: `true`.
 - `MEMORY_DIR`: directory for chat history JSONL files. Default: `.telegram-memory`.
 - `MEMORY_REFINE`: ask the configured backend to distill each successful exchange before storing it. Default: `true`.
+- `STATE_DIR`: directory for Telegram offsets and recent job history. Default: `.telegram-state`.
 
 Queue limits, progress cadence, state location, debate size, memory window, answer buttons, and dangerous-action confirmation use fixed safe defaults instead of runtime configuration.
 
-- Jobs: one active job per chat, 20 history entries, 60-second progress updates, state in `.telegram-state`.
+- Jobs: one active job per chat, four active jobs globally, 10 queued jobs per chat, 100 queued jobs globally, and 10 accepted requests per minute per chat.
+- Job history: 20 entries per chat, 60-second progress updates, state in `.telegram-state` or `STATE_DIR`.
 - Debate: up to four independent role analyses, one moderator review, final synthesis, transcript messages enabled.
 - Memory: up to 20 relevant/recent notes, 12,000 context characters, 1,000-character refined notes, 90-second refinement timeout.
 - Telegram: plain-text responses, answer buttons enabled, dangerous-action confirmation required.
@@ -120,7 +122,7 @@ Use `/agent <name> <message>` for a single-agent answer, bypassing debate. Use `
 
 ## Memory
 
-Memory context prioritizes notes that share meaningful terms with the current request, then includes up to three recent notes as continuity fallback. The final context is capped at 20 notes and 12,000 characters. Refined notes are capped at 1,000 characters with a 90-second refinement timeout.
+Memory stores the redacted raw user/assistant exchange for short-term conversational continuity and may also add a refined durable note. Context prioritizes records that share meaningful terms with the current request, then includes the three most recent records as continuity fallback. The final context is capped at 20 records and 12,000 characters. Refined notes are capped at 1,000 characters with a 90-second refinement timeout.
 
 Stored memory is explicitly marked as untrusted and potentially outdated in the agent prompt. Agents are instructed to use it only as relevant context, not as executable instructions.
 
@@ -130,7 +132,7 @@ Memory commands:
 
 - `/memory`: show current memory status, storage path, byte count, and invalid JSONL line count.
 - `/memory show`: list valid stored memories with 1-based indexes.
-- `/memory delete <n>`: delete one stored memory by index.
+- `/memory delete <n>`: delete the exchange containing the selected memory index.
 - `/memory export`: send valid memories as JSONL.
 - `/memory repair`: rewrite the memory file with only valid JSONL entries, removing corrupted lines.
 
@@ -140,19 +142,20 @@ Codex backend:
 
 - `CODEX_BIN`: Codex executable. Default: `codex`.
 - `CODEX_WORKDIR`: working directory passed to `codex exec -C`. Default: current directory.
-- `CODEX_SANDBOX`: Codex sandbox mode. Default: `read-only`.
+- `CODEX_SANDBOX`: `read-only` or `workspace-write`. Default: `read-only`. Legacy `seatbelt` is treated as `read-only`; `danger-full-access` is rejected.
 - `CODEX_MODEL`: optional Codex model.
 
 Command backend:
 
 - `LOCAL_AGENT_COMMAND`: command that receives the prompt on stdin and writes the answer to stdout.
-- `LOCAL_AGENT_COMMAND_ALLOWLIST`: optional comma-separated executable allowlist for `AGENT_BACKEND=command` and per-agent command overrides. Entries match either exact path or basename.
+- `LOCAL_AGENT_COMMAND_ALLOWLIST`: required comma-separated executable allowlist for `AGENT_BACKEND=command` and per-agent command overrides. Entries match either exact path or basename.
 
 Example:
 
 ```sh
 AGENT_BACKEND=command
 LOCAL_AGENT_COMMAND='chatgpt'
+LOCAL_AGENT_COMMAND_ALLOWLIST=chatgpt
 ```
 
 Ollama backend:
@@ -195,7 +198,7 @@ OLLAMA_MODEL=llama3.2
 - Recent terminal job history is persisted and remains visible through `/status` and `/retry` after restart. Running and queued jobs are not resumed.
 - A running job uses one editable progress message instead of sending repeated progress messages.
 - Queue and progress messages include a cancel button; completed, failed, and canceled progress messages include a retry button.
-- Successful user/assistant exchanges are distilled into compact memory notes, appended to a per-chat JSONL file, and included as context on later requests.
+- Successful user/assistant exchanges are stored as redacted raw turns for exact short-term continuity, optionally distilled into compact durable notes, and included as context on later requests.
 - Agent answers include inline buttons for “다시 생성”, “기억 삭제”, and debate transcript viewing.
 - Bot responses are sent as plain text.
 - Common secrets and personal contact fields are redacted before sending bot messages and before writing memory notes.
@@ -208,8 +211,9 @@ Treat this as remote access to a local agent. Keep these defaults unless you hav
 - Use `TELEGRAM_ALLOWED_USER_IDS` when the bot is in a chat where more than one Telegram user can send messages.
 - Keep `TELEGRAM_ALLOW_GROUPS=false` unless you intentionally run the bot in a group/supergroup.
 - Keep `CODEX_SANDBOX=read-only` for Codex.
-- Destructive-looking requests always require an explicit `/confirm <id>`.
-- Set `LOCAL_AGENT_COMMAND_ALLOWLIST` when using `AGENT_BACKEND=command`.
+- Recognized destructive commands and imperative deletion requests require an explicit `/confirm <id>`. This check supplements, but does not replace, backend sandboxing.
+- `danger-full-access` is rejected for Codex, and non-interactive Codex runs cannot request approval escalation.
+- Set `LOCAL_AGENT_COMMAND_ALLOWLIST` when using `AGENT_BACKEND=command`; startup fails without it.
 - The memory directory stores Telegram messages and agent replies in plain JSONL. Keep it out of Git and protect the host account.
 - `.telegram-state` stores the Telegram offset and recent job requests in plain JSON. Protect it with the same care as the memory directory.
 - Be careful with `AGENT_BACKEND=command`; it intentionally runs the configured local program.
@@ -228,6 +232,21 @@ Build a container image:
 docker build -t telegram-local-agent .
 ```
 
+The image includes the pinned Codex CLI and bundled `agents.json`. It runs as an unprivileged user, keeps Codex in `read-only` mode, uses `/workspace` as the agent working directory, and stores runtime data under `/data`.
+
+Example using the host Codex login and a read-only workspace:
+
+```sh
+docker run --rm \
+  --env-file .env \
+  --volume "$PWD:/workspace:ro" \
+  --volume "$HOME/.codex:/home/app/.codex" \
+  --volume telegram-local-agent-data:/data \
+  telegram-local-agent
+```
+
+The Codex authentication mount contains sensitive credentials. Use it only on a trusted host and do not expose this bot publicly. For write-enabled work, explicitly set `CODEX_SANDBOX=workspace-write` and mount only the intended workspace as writable.
+
 Operational samples are in `deploy/`:
 
 - `deploy/telegram-local-agent.service`: systemd service with restricted filesystem access.
@@ -240,4 +259,4 @@ Source layout:
 - `bin/`: local build output, ignored by Git and Docker.
 - `deploy/`: systemd and launchd samples.
 
-GitHub Actions in `.github/workflows/ci.yml` runs `go test`, `go vet`, and `go build`. Version tags matching `v*` build Linux and macOS release binaries.
+GitHub Actions in `.github/workflows/ci.yml` runs tests including the race detector, `go vet`, binary and Docker builds. Version tags matching `v*` build Linux and macOS release binaries with SHA-256 checksums.

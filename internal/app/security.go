@@ -141,15 +141,24 @@ func (a *App) needsDangerConfirmation(text string) bool {
 }
 
 var dangerousActionPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)\brm\s+-[^\n]*(r|f)[^\n]*\s+/`),
+	regexp.MustCompile(`(?i)\brm\b[^\n]*(?:-[^\s\n]*[rf]|--recursive|--force)`),
+	regexp.MustCompile(`(?i)\bfind\b[^\n]*\s-delete\b`),
+	regexp.MustCompile(`(?i)\b(?:chmod|chown)\s+-R\b`),
 	regexp.MustCompile(`(?i)\bgit\s+reset\s+--hard\b`),
 	regexp.MustCompile(`(?i)\bgit\s+clean\s+-[^\n]*f`),
+	regexp.MustCompile(`(?i)\bgit\s+(?:restore|checkout)\b[^\n]*(?:--\s*)?(?:\.|/)`),
 	regexp.MustCompile(`(?i)\bterraform\s+destroy\b`),
 	regexp.MustCompile(`(?i)\bkubectl\s+delete\b`),
-	regexp.MustCompile(`(?i)\baws\s+s3\s+rm\b`),
-	regexp.MustCompile(`(?i)\bdrop\s+database\b`),
+	regexp.MustCompile(`(?i)\bhelm\s+uninstall\b`),
+	regexp.MustCompile(`(?i)\bdocker\s+(?:system\s+prune|rm\s+-[^\n]*f|compose\s+down\b[^\n]*-v)`),
+	regexp.MustCompile(`(?i)\baws\b[^\n]*(?:\bs3\s+rm\b|\bdelete-[a-z-]+\b)`),
+	regexp.MustCompile(`(?i)\b(?:drop|truncate)\s+(?:database|schema|table)\b`),
+	regexp.MustCompile(`(?i)\bdelete\s+from\b`),
 	regexp.MustCompile(`(?i)\bshutdown\b|\breboot\b`),
 	regexp.MustCompile(`(?i)\bmkfs\b|\bdiskutil\s+erase`),
+	regexp.MustCompile(`(?i)(?:파일|폴더|디렉토리|데이터|데이터베이스|테이블|버킷|클러스터|리소스).{0,24}(?:삭제|지워|제거|초기화|롤백)(?:해|해줘|해주세요|하자|시켜)`),
+	regexp.MustCompile(`(?i)(?:삭제|지워|제거|초기화|롤백)(?:해|해줘|해주세요|하자|시켜).{0,24}(?:파일|폴더|디렉토리|데이터|데이터베이스|테이블|버킷|클러스터|리소스)`),
+	regexp.MustCompile(`(?i)\b(?:please\s+|run\s+|execute\s+|can\s+you\s+)(?:delete|remove|wipe|destroy|drop|reset|rollback)\b[^\n]{0,48}\b(?:file|directory|database|table|bucket|cluster|resource|repository)\b`),
 }
 
 func containsDangerousAction(text string) bool {

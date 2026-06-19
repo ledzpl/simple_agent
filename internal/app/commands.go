@@ -26,7 +26,7 @@ var commandHelps = []commandHelp{
 	{Usage: "/confirm <id>", Description: "위험 작업 확인 후 실행"},
 	{Usage: "/memory", Description: "현재 chat의 저장된 기억 상태 확인"},
 	{Usage: "/memory show", Description: "현재 chat의 저장된 기억 목록 보기"},
-	{Usage: "/memory delete <n>", Description: "n번째 저장 기억 삭제"},
+	{Usage: "/memory delete <n>", Description: "n번째 항목이 속한 대화 기억 삭제"},
 	{Usage: "/memory export", Description: "현재 chat의 저장 기억을 JSONL로 내보내기"},
 	{Usage: "/memory repair", Description: "손상된 JSONL 라인을 제거하고 기억 파일 복구"},
 	{Usage: "/reset", Description: "현재 chat의 저장된 기억 삭제"},
@@ -137,7 +137,7 @@ func (a *App) handleMemoryDelete(ctx context.Context, msg TelegramMessage, arg s
 		_ = a.sendMessage(ctx, msg.Chat.ID, "저장된 기억을 삭제하지 못했습니다.\n\n"+err.Error(), msg.MessageID)
 		return
 	}
-	_ = a.sendMessage(ctx, msg.Chat.ID, fmt.Sprintf("%d번째 저장 기억을 삭제했습니다.", index), msg.MessageID)
+	_ = a.sendMessage(ctx, msg.Chat.ID, fmt.Sprintf("%d번째 항목이 속한 대화 기억을 삭제했습니다.", index), msg.MessageID)
 }
 
 func (a *App) handleMemoryExport(ctx context.Context, msg TelegramMessage) {
@@ -254,7 +254,10 @@ func (a *App) handleRetry(ctx context.Context, msg TelegramMessage) {
 		_ = a.sendMessage(ctx, msg.Chat.ID, fmt.Sprintf("이전 작업 요청이 위험할 수 있습니다. 다시 실행하려면 다음 명령을 보내세요.\n/confirm %s", confirmation.ID), msg.MessageID)
 		return
 	}
-	snapshot := a.enqueueAgentJob(ctx, msg, source.Message, source.ForceDebate)
+	snapshot, err := a.enqueueAgentJob(ctx, msg, source.Message, source.ForceDebate)
+	if err != nil {
+		return
+	}
 	_ = a.sendMessage(ctx, msg.Chat.ID, fmt.Sprintf("작업을 다시 등록했습니다.\n%s", formatJobLine(snapshot)), msg.MessageID)
 }
 
@@ -278,7 +281,7 @@ func (a *App) handleConfirm(ctx context.Context, msg TelegramMessage) {
 		return
 	}
 	confirmation.Message.MessageID = msg.MessageID
-	a.enqueueAgentJob(ctx, confirmation.Message, confirmation.Text, confirmation.ForceDebate)
+	_, _ = a.enqueueAgentJob(ctx, confirmation.Message, confirmation.Text, confirmation.ForceDebate)
 }
 
 func (a *App) identityMessage(msg TelegramMessage) string {
@@ -341,7 +344,7 @@ func memoryUsage() string {
 	return strings.TrimSpace(`사용법:
 /memory - 저장 기억 상태 확인
 /memory show - 저장 기억 목록 보기
-/memory delete <n> - n번째 저장 기억 삭제
+/memory delete <n> - n번째 항목이 속한 대화 기억 삭제
 /memory export - 저장 기억을 JSONL로 내보내기
 /memory repair - 손상된 JSONL 라인 제거`)
 }

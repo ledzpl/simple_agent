@@ -2,7 +2,9 @@ package app
 
 import (
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseAllowedChatIDs(t *testing.T) {
@@ -48,5 +50,37 @@ func TestValidateCommandAllowed(t *testing.T) {
 	}
 	if err := validateCommandAllowed([]string{"/tmp/unknown"}, allowlist); err == nil {
 		t.Fatal("expected disallowed command error")
+	}
+	if err := validateCommandAllowed([]string{"chatgpt"}, nil); err == nil {
+		t.Fatal("expected missing allowlist error")
+	}
+}
+
+func TestValidateAgentConfigRejectsDangerFullAccess(t *testing.T) {
+	err := validateAgentConfig(Config{
+		AgentBackend: BackendCodex,
+		AgentTimeout: time.Second,
+		CodexBin:     "codex",
+		CodexSandbox: "danger-full-access",
+	})
+	if err == nil || !strings.Contains(err.Error(), "not allowed") {
+		t.Fatalf("expected danger-full-access rejection, got %v", err)
+	}
+}
+
+func TestNormalizeCodexSandboxMapsLegacySeatbeltToReadOnly(t *testing.T) {
+	if got := normalizeCodexSandbox("seatbelt"); got != "read-only" {
+		t.Fatalf("normalizeCodexSandbox(seatbelt) = %q", got)
+	}
+}
+
+func TestEnvParsersRejectInvalidValues(t *testing.T) {
+	t.Setenv("TEST_BOOL", "sometimes")
+	if _, err := envBool("TEST_BOOL", false); err == nil {
+		t.Fatal("expected invalid boolean error")
+	}
+	t.Setenv("TEST_DURATION", "later")
+	if _, err := envDuration("TEST_DURATION", time.Minute); err == nil {
+		t.Fatal("expected invalid duration error")
 	}
 }

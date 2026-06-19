@@ -6,11 +6,10 @@ on:
     tags: ["v*"]
   pull_request:
 
-permissions:
-  contents: write
-
 jobs:
   test:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -18,12 +17,16 @@ jobs:
         with:
           go-version-file: go.mod
       - run: go test ./...
+      - run: go test -race ./...
       - run: go vet ./...
       - run: |
           mkdir -p bin
           go build -o bin/telegram-local-agent ./cmd/telegram-local-agent
+      - run: docker build -t telegram-local-agent:test .
 
   release:
+    permissions:
+      contents: write
     if: startsWith(github.ref, 'refs/tags/v')
     needs: test
     runs-on: ubuntu-latest
@@ -45,6 +48,9 @@ jobs:
           go-version-file: go.mod
       - run: |
           CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -trimpath -o telegram-local-agent-${{ matrix.goos }}-${{ matrix.goarch }} ./cmd/telegram-local-agent
+          sha256sum telegram-local-agent-${{ matrix.goos }}-${{ matrix.goarch }} > telegram-local-agent-${{ matrix.goos }}-${{ matrix.goarch }}.sha256
       - uses: softprops/action-gh-release@v2
         with:
-          files: telegram-local-agent-${{ matrix.goos }}-${{ matrix.goarch }}
+          files: |
+            telegram-local-agent-${{ matrix.goos }}-${{ matrix.goarch }}
+            telegram-local-agent-${{ matrix.goos }}-${{ matrix.goarch }}.sha256

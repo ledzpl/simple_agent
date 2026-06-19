@@ -2,12 +2,18 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+)
+
+var (
+	ErrQueueFull   = errors.New("job queue is full")
+	ErrRateLimited = errors.New("job request rate limit exceeded")
 )
 
 type JobState string
@@ -56,28 +62,58 @@ type JobSnapshot struct {
 }
 
 type JobManager struct {
-	mu           sync.Mutex
-	maxActive    int
-	run          func(context.Context, *AgentJob)
-	active       map[int64][]*AgentJob
-	queued       map[int64][]*AgentJob
-	history      map[int64][]*AgentJob
-	historyLimit int
-	historySink  func([]JobSnapshot)
+	mu                   sync.Mutex
+	maxActivePerChat     int
+	maxActiveGlobal      int
+	maxQueuedPerChat     int
+	maxQueuedGlobal      int
+	maxRequestsPerMinute int
+	run                  func(context.Context, *AgentJob)
+	active               map[int64][]*AgentJob
+	activeCount          int
+	queued               []*AgentJob
+	recentRequests       map[int64][]time.Time
+	history              map[int64][]*AgentJob
+	historyLimit         int
+	historySink          func([]JobSnapshot)
 }
 
-func NewJobManager(maxActive int, run func(context.Context, *AgentJob)) *JobManager {
-	if maxActive <= 0 {
-		maxActive = 1
+func NewJobManager(maxActivePerChat int, run func(context.Context, *AgentJob)) *JobManager {
+	if maxActivePerChat <= 0 {
+		maxActivePerChat = 1
 	}
 	return &JobManager{
-		maxActive:    maxActive,
-		run:          run,
-		active:       map[int64][]*AgentJob{},
-		queued:       map[int64][]*AgentJob{},
-		history:      map[int64][]*AgentJob{},
-		historyLimit: 20,
+		maxActivePerChat: maxActivePerChat,
+		maxActiveGlobal:  maxActivePerChat,
+		maxQueuedPerChat: 20,
+		maxQueuedGlobal:  100,
+		run:              run,
+		active:           map[int64][]*AgentJob{},
+		recentRequests:   map[int64][]time.Time{},
+		history:          map[int64][]*AgentJob{},
+		historyLimit:     20,
 	}
+}
+
+func (m *JobManager) SetLimits(maxActiveGlobal, maxQueuedPerChat, maxQueuedGlobal, maxRequestsPerMinute int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if maxActiveGlobal <= 0 {
+		maxActiveGlobal = 1
+	}
+	if maxQueuedPerChat <= 0 {
+		maxQueuedPerChat = 1
+	}
+	if maxQueuedGlobal < maxQueuedPerChat {
+		maxQueuedGlobal = maxQueuedPerChat
+	}
+	if maxRequestsPerMinute <= 0 {
+		maxRequestsPerMinute = 1
+	}
+	m.maxActiveGlobal = maxActiveGlobal
+	m.maxQueuedPerChat = maxQueuedPerChat
+	m.maxQueuedGlobal = maxQueuedGlobal
+	m.maxRequestsPerMinute = maxRequestsPerMinute
 }
 
 func (m *JobManager) SetHistoryLimit(limit int) {
@@ -119,7 +155,7 @@ func (m *JobManager) LoadHistory(snapshots []JobSnapshot) {
 	}
 }
 
-func (m *JobManager) Enqueue(ctx context.Context, job *AgentJob) JobSnapshot {
+func (m *JobManager) Enqueue(ctx context.Context, job *AgentJob) (JobSnapshot, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -132,14 +168,26 @@ func (m *JobManager) Enqueue(ctx context.Context, job *AgentJob) JobSnapshot {
 	if job.CreatedAt.IsZero() {
 		job.CreatedAt = time.Now().UTC()
 	}
+	acceptedAt := time.Now().UTC()
+	if err := m.checkRateLimitLocked(job.ChatID, acceptedAt); err != nil {
+		return JobSnapshot{}, err
+	}
 	job.parentCtx = ctx
 	job.State = JobQueued
-	if len(m.active[job.ChatID]) >= m.maxActive {
-		m.queued[job.ChatID] = append(m.queued[job.ChatID], job)
-		return snapshotJob(job)
+	if !m.canStartLocked(job.ChatID) {
+		if len(m.queued) >= m.maxQueuedGlobal {
+			return JobSnapshot{}, fmt.Errorf("%w: global limit is %d", ErrQueueFull, m.maxQueuedGlobal)
+		}
+		if m.queuedCountForChatLocked(job.ChatID) >= m.maxQueuedPerChat {
+			return JobSnapshot{}, fmt.Errorf("%w: chat limit is %d", ErrQueueFull, m.maxQueuedPerChat)
+		}
+		m.queued = append(m.queued, job)
+		m.recordRequestLocked(job.ChatID, acceptedAt)
+		return snapshotJob(job), nil
 	}
 	m.startLocked(ctx, job)
-	return snapshotJob(job)
+	m.recordRequestLocked(job.ChatID, acceptedAt)
+	return snapshotJob(job), nil
 }
 
 func (m *JobManager) Status(chatID int64) []JobSnapshot {
@@ -150,8 +198,10 @@ func (m *JobManager) Status(chatID int64) []JobSnapshot {
 	for _, job := range m.active[chatID] {
 		out = append(out, snapshotJob(job))
 	}
-	for _, job := range m.queued[chatID] {
-		out = append(out, snapshotJob(job))
+	for _, job := range m.queued {
+		if job.ChatID == chatID {
+			out = append(out, snapshotJob(job))
+		}
 	}
 	for i := len(m.history[chatID]) - 1; i >= 0 && len(out) < 10; i-- {
 		out = append(out, snapshotJob(m.history[chatID][i]))
@@ -183,21 +233,28 @@ func (m *JobManager) Cancel(chatID int64, selector string) ([]JobSnapshot, error
 		for _, job := range m.active[chatID] {
 			cancelOne(job)
 		}
-		for _, job := range m.queued[chatID] {
-			cancelOne(job)
-			m.addHistoryLocked(job)
+		kept := m.queued[:0]
+		for _, job := range m.queued {
+			if job.ChatID == chatID {
+				cancelOne(job)
+				m.addHistoryLocked(job)
+				continue
+			}
+			kept = append(kept, job)
 		}
-		m.queued[chatID] = nil
+		m.queued = kept
 		return canceled, nil
 	}
 
 	if selector == "latest" {
-		if queued := m.queued[chatID]; len(queued) > 0 {
-			job := queued[len(queued)-1]
-			m.queued[chatID] = queued[:len(queued)-1]
-			cancelOne(job)
-			m.addHistoryLocked(job)
-			return canceled, nil
+		for i := len(m.queued) - 1; i >= 0; i-- {
+			if m.queued[i].ChatID == chatID {
+				job := m.queued[i]
+				m.queued = append(m.queued[:i], m.queued[i+1:]...)
+				cancelOne(job)
+				m.addHistoryLocked(job)
+				return canceled, nil
+			}
 		}
 		if active := m.active[chatID]; len(active) > 0 {
 			cancelOne(active[len(active)-1])
@@ -206,9 +263,9 @@ func (m *JobManager) Cancel(chatID int64, selector string) ([]JobSnapshot, error
 		return nil, fmt.Errorf("no active or queued jobs")
 	}
 
-	for i, job := range m.queued[chatID] {
-		if strings.EqualFold(job.ID, selector) {
-			m.queued[chatID] = append(m.queued[chatID][:i], m.queued[chatID][i+1:]...)
+	for i, job := range m.queued {
+		if job.ChatID == chatID && strings.EqualFold(job.ID, selector) {
+			m.queued = append(m.queued[:i], m.queued[i+1:]...)
 			cancelOne(job)
 			m.addHistoryLocked(job)
 			return canceled, nil
@@ -234,7 +291,7 @@ func (m *JobManager) Retry(ctx context.Context, chatID int64, selector string) (
 		ReplyTo:     source.ReplyTo,
 		Message:     source.Message,
 		ForceDebate: source.ForceDebate,
-	}), nil
+	})
 }
 
 func (m *JobManager) RetrySource(chatID int64, selector string) (JobSnapshot, error) {
@@ -305,27 +362,7 @@ func (m *JobManager) Finish(job *AgentJob, state JobState, agentName, errText st
 	job.FinishedAt = time.Now().UTC()
 	m.removeActiveLocked(job)
 	m.addHistoryLocked(job)
-
-	for {
-		queued := m.queued[job.ChatID]
-		if len(queued) == 0 {
-			return
-		}
-		next := queued[0]
-		m.queued[job.ChatID] = queued[1:]
-		if next.parentCtx == nil {
-			next.parentCtx = context.Background()
-		}
-		if err := next.parentCtx.Err(); err != nil {
-			next.State = JobCanceled
-			next.Error = err.Error()
-			next.FinishedAt = time.Now().UTC()
-			m.addHistoryLocked(next)
-			continue
-		}
-		m.startLocked(next.parentCtx, next)
-		return
-	}
+	m.startAvailableLocked()
 }
 
 func (m *JobManager) startLocked(ctx context.Context, job *AgentJob) {
@@ -334,6 +371,7 @@ func (m *JobManager) startLocked(ctx context.Context, job *AgentJob) {
 	job.State = JobRunning
 	job.StartedAt = time.Now().UTC()
 	m.active[job.ChatID] = append(m.active[job.ChatID], job)
+	m.activeCount++
 	go m.run(jobCtx, job)
 }
 
@@ -342,9 +380,79 @@ func (m *JobManager) removeActiveLocked(job *AgentJob) {
 	for i, candidate := range active {
 		if candidate == job {
 			m.active[job.ChatID] = append(active[:i], active[i+1:]...)
+			if m.activeCount > 0 {
+				m.activeCount--
+			}
 			return
 		}
 	}
+}
+
+func (m *JobManager) startAvailableLocked() {
+	for m.activeCount < m.maxActiveGlobal {
+		started := false
+		for i := 0; i < len(m.queued); i++ {
+			next := m.queued[i]
+			if next.parentCtx == nil {
+				next.parentCtx = context.Background()
+			}
+			if err := next.parentCtx.Err(); err != nil {
+				m.queued = append(m.queued[:i], m.queued[i+1:]...)
+				next.State = JobCanceled
+				next.Error = err.Error()
+				next.FinishedAt = time.Now().UTC()
+				m.addHistoryLocked(next)
+				i--
+				continue
+			}
+			if len(m.active[next.ChatID]) >= m.maxActivePerChat {
+				continue
+			}
+			m.queued = append(m.queued[:i], m.queued[i+1:]...)
+			m.startLocked(next.parentCtx, next)
+			started = true
+			break
+		}
+		if !started {
+			return
+		}
+	}
+}
+
+func (m *JobManager) canStartLocked(chatID int64) bool {
+	return m.activeCount < m.maxActiveGlobal && len(m.active[chatID]) < m.maxActivePerChat
+}
+
+func (m *JobManager) queuedCountForChatLocked(chatID int64) int {
+	count := 0
+	for _, job := range m.queued {
+		if job.ChatID == chatID {
+			count++
+		}
+	}
+	return count
+}
+
+func (m *JobManager) checkRateLimitLocked(chatID int64, now time.Time) error {
+	if m.maxRequestsPerMinute <= 0 {
+		return nil
+	}
+	cutoff := now.Add(-time.Minute)
+	recent := m.recentRequests[chatID]
+	firstValid := 0
+	for firstValid < len(recent) && recent[firstValid].Before(cutoff) {
+		firstValid++
+	}
+	recent = recent[firstValid:]
+	m.recentRequests[chatID] = recent
+	if len(recent) >= m.maxRequestsPerMinute {
+		return fmt.Errorf("%w: maximum %d accepted jobs per minute per chat", ErrRateLimited, m.maxRequestsPerMinute)
+	}
+	return nil
+}
+
+func (m *JobManager) recordRequestLocked(chatID int64, now time.Time) {
+	m.recentRequests[chatID] = append(m.recentRequests[chatID], now)
 }
 
 func (m *JobManager) addHistoryLocked(job *AgentJob) {

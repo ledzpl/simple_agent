@@ -17,9 +17,12 @@ const (
 
 	defaultAgentName     = "default"
 	maxActiveJobsPerChat = 1
+	maxActiveJobsGlobal  = 4
+	maxQueuedJobsPerChat = 10
+	maxQueuedJobsGlobal  = 100
+	maxRequestsPerMinute = 10
 	jobHistoryLimit      = 20
 	jobProgressInterval  = 60 * time.Second
-	stateDir             = ".telegram-state"
 	debateMaxAgents      = 4
 	debateRounds         = 1
 	memoryMaxMessages    = 20
@@ -41,6 +44,7 @@ type Config struct {
 	MemoryEnabled     bool
 	MemoryDir         string
 	MemoryRefine      bool
+	StateDir          string
 
 	CodexBin     string
 	CodexWorkDir string
@@ -59,20 +63,42 @@ func LoadConfig() (Config, error) {
 		return Config{}, err
 	}
 
+	allowGroupChats, err := envBool("TELEGRAM_ALLOW_GROUPS", false)
+	if err != nil {
+		return Config{}, err
+	}
+	debateEnabled, err := envBool("DEBATE_ENABLED", false)
+	if err != nil {
+		return Config{}, err
+	}
+	memoryEnabled, err := envBool("MEMORY_ENABLED", true)
+	if err != nil {
+		return Config{}, err
+	}
+	memoryRefine, err := envBool("MEMORY_REFINE", true)
+	if err != nil {
+		return Config{}, err
+	}
+	agentTimeout, err := envDuration("AGENT_TIMEOUT", 5*time.Minute)
+	if err != nil {
+		return Config{}, err
+	}
+
 	cfg := Config{
 		TelegramToken:     strings.TrimSpace(os.Getenv("TELEGRAM_BOT_TOKEN")),
-		AllowGroupChats:   envBool("TELEGRAM_ALLOW_GROUPS", false),
+		AllowGroupChats:   allowGroupChats,
 		AgentBackend:      envDefault("AGENT_BACKEND", BackendCodex),
-		AgentTimeout:      envDuration("AGENT_TIMEOUT", 5*time.Minute),
+		AgentTimeout:      agentTimeout,
 		AgentSystemPrompt: envDefault("AGENT_SYSTEM_PROMPT", defaultSystemPrompt()),
 		AgentsFile:        envDefault("AGENTS_FILE", "agents.json"),
-		DebateEnabled:     envBool("DEBATE_ENABLED", false),
-		MemoryEnabled:     envBool("MEMORY_ENABLED", true),
+		DebateEnabled:     debateEnabled,
+		MemoryEnabled:     memoryEnabled,
 		MemoryDir:         envDefault("MEMORY_DIR", ".telegram-memory"),
-		MemoryRefine:      envBool("MEMORY_REFINE", true),
+		MemoryRefine:      memoryRefine,
+		StateDir:          envDefault("STATE_DIR", ".telegram-state"),
 		CodexBin:          envDefault("CODEX_BIN", "codex"),
 		CodexWorkDir:      envDefault("CODEX_WORKDIR", "."),
-		CodexSandbox:      envDefault("CODEX_SANDBOX", "read-only"),
+		CodexSandbox:      normalizeCodexSandbox(envDefault("CODEX_SANDBOX", "read-only")),
 		CodexModel:        strings.TrimSpace(os.Getenv("CODEX_MODEL")),
 		OllamaURL:         envDefault("OLLAMA_URL", "http://localhost:11434"),
 		OllamaModel:       strings.TrimSpace(os.Getenv("OLLAMA_MODEL")),
@@ -115,6 +141,14 @@ func LoadConfig() (Config, error) {
 		cfg.MemoryDir = abs
 	}
 
+	if cfg.StateDir != "" {
+		abs, err := filepath.Abs(cfg.StateDir)
+		if err != nil {
+			return Config{}, fmt.Errorf("resolve STATE_DIR: %w", err)
+		}
+		cfg.StateDir = abs
+	}
+
 	if cfg.AgentBackend == BackendCommand {
 		raw := strings.TrimSpace(os.Getenv("LOCAL_AGENT_COMMAND"))
 		if raw == "" {
@@ -146,9 +180,19 @@ func validateAgentConfig(cfg Config) error {
 		if strings.TrimSpace(cfg.CodexBin) == "" {
 			return errors.New("CODEX_BIN is required when backend is codex")
 		}
+		switch cfg.CodexSandbox {
+		case "read-only", "workspace-write":
+		case "danger-full-access":
+			return errors.New("CODEX_SANDBOX=danger-full-access is not allowed for a Telegram-triggered agent")
+		default:
+			return fmt.Errorf("unsupported CODEX_SANDBOX %q; use read-only or workspace-write", cfg.CodexSandbox)
+		}
 	case BackendCommand:
 		if len(cfg.Command) == 0 {
 			return errors.New("LOCAL_AGENT_COMMAND or agent command is required when backend is command")
+		}
+		if len(cfg.CommandAllowlist) == 0 {
+			return errors.New("LOCAL_AGENT_COMMAND_ALLOWLIST is required when backend is command")
 		}
 		if err := validateCommandAllowed(cfg.Command, cfg.CommandAllowlist); err != nil {
 			return err
@@ -167,6 +211,14 @@ func defaultSystemPrompt() string {
 	return "You are answering a message received from Telegram. Keep the answer concise and practical. If you need to modify files or run commands, explain that this Telegram bridge is configured for a local agent and may be sandboxed."
 }
 
+func normalizeCodexSandbox(value string) string {
+	value = strings.TrimSpace(strings.ToLower(value))
+	if value == "seatbelt" {
+		return "read-only"
+	}
+	return value
+}
+
 func envDefault(key, fallback string) string {
 	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
 		return value
@@ -174,31 +226,31 @@ func envDefault(key, fallback string) string {
 	return fallback
 }
 
-func envBool(key string, fallback bool) bool {
+func envBool(key string, fallback bool) (bool, error) {
 	value := strings.TrimSpace(strings.ToLower(os.Getenv(key)))
 	if value == "" {
-		return fallback
+		return fallback, nil
 	}
 	switch value {
 	case "1", "true", "yes", "y", "on":
-		return true
+		return true, nil
 	case "0", "false", "no", "n", "off":
-		return false
+		return false, nil
 	default:
-		return fallback
+		return false, fmt.Errorf("invalid %s value %q; use true or false", key, value)
 	}
 }
 
-func envDuration(key string, fallback time.Duration) time.Duration {
+func envDuration(key string, fallback time.Duration) (time.Duration, error) {
 	value := strings.TrimSpace(os.Getenv(key))
 	if value == "" {
-		return fallback
+		return fallback, nil
 	}
 	duration, err := parseDurationValue(value)
-	if err == nil && duration > 0 {
-		return duration
+	if err != nil || duration <= 0 {
+		return 0, fmt.Errorf("invalid %s value %q: %w", key, value, err)
 	}
-	return fallback
+	return duration, nil
 }
 
 func parseDurationValue(value string) (time.Duration, error) {
@@ -263,8 +315,11 @@ func parseCommandAllowlist(raw string) (map[string]struct{}, error) {
 }
 
 func validateCommandAllowed(command []string, allowlist map[string]struct{}) error {
-	if len(allowlist) == 0 || len(command) == 0 {
-		return nil
+	if len(command) == 0 {
+		return errors.New("command is empty")
+	}
+	if len(allowlist) == 0 {
+		return errors.New("LOCAL_AGENT_COMMAND_ALLOWLIST is required when backend is command")
 	}
 	executable := strings.TrimSpace(command[0])
 	if executable == "" {
