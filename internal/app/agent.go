@@ -25,19 +25,6 @@ type StreamingAgent interface {
 	AskStream(ctx context.Context, prompt string, onDelta func(string)) (string, error)
 }
 
-// deltaWriter forwards everything written to it to a callback, used to stream
-// a subprocess's stdout as it is produced.
-type deltaWriter struct {
-	onDelta func(string)
-}
-
-func (w deltaWriter) Write(p []byte) (int, error) {
-	if w.onDelta != nil && len(p) > 0 {
-		w.onDelta(string(p))
-	}
-	return len(p), nil
-}
-
 func NewAgent(cfg Config) (Agent, error) {
 	switch cfg.AgentBackend {
 	case BackendCodex:
@@ -57,10 +44,6 @@ type CodexAgent struct {
 }
 
 func (a CodexAgent) Ask(ctx context.Context, prompt string) (string, error) {
-	return a.AskStream(ctx, prompt, nil)
-}
-
-func (a CodexAgent) AskStream(ctx context.Context, prompt string, onDelta func(string)) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, a.cfg.AgentTimeout)
 	defer cancel()
 
@@ -94,12 +77,6 @@ func (a CodexAgent) AskStream(ctx context.Context, prompt string, onDelta func(s
 
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
-
-	// The authoritative answer is read from the -o file; stdout is only a live
-	// progress preview, so we stream it without parsing Codex's log format.
-	if onDelta != nil {
-		cmd.Stdout = deltaWriter{onDelta: onDelta}
-	}
 
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() != nil {
@@ -178,7 +155,7 @@ func (a OllamaAgent) Ask(ctx context.Context, prompt string) (string, error) {
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := readLimitedBody(resp.Body, ollamaResponseBodyLimit)
 	if err != nil {
 		return "", fmt.Errorf("read ollama response: %w", err)
 	}
@@ -239,13 +216,14 @@ func (a OllamaAgent) AskStream(ctx context.Context, prompt string, onDelta func(
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := readLimitedBody(resp.Body, ollamaResponseBodyLimit)
 		return "", fmt.Errorf("ollama status %d: %s", resp.StatusCode, trimBody(body))
 	}
 
 	// Streaming responses are newline-delimited JSON objects, one per chunk.
-	decoder := json.NewDecoder(resp.Body)
+	decoder := json.NewDecoder(io.LimitReader(resp.Body, ollamaResponseBodyLimit))
 	var out strings.Builder
+	done := false
 	for {
 		var chunk ollamaChatResponse
 		if err := decoder.Decode(&chunk); err != nil {
@@ -267,8 +245,12 @@ func (a OllamaAgent) AskStream(ctx context.Context, prompt string, onDelta func(
 			}
 		}
 		if chunk.Done {
+			done = true
 			break
 		}
+	}
+	if !done {
+		return "", fmt.Errorf("ollama stream ended before completion")
 	}
 
 	answer := strings.TrimSpace(out.String())
@@ -292,8 +274,6 @@ func formatStderr(stderr string) string {
 	if stderr == "" {
 		return ""
 	}
-	if len(stderr) > 1200 {
-		stderr = stderr[:1200] + "\n..."
-	}
+	stderr = truncate(stderr, 1200)
 	return "\nstderr:\n" + stderr
 }

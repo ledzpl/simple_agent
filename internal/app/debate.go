@@ -45,9 +45,6 @@ func (a *App) answerWithDebate(ctx context.Context, chatID int64, userMessage, m
 		}, nil
 	}
 
-	// analyses + review + synthesis
-	total := len(participants) + 2
-
 	// The analyses are independent by design (no agent sees another's output),
 	// so run them concurrently and reassemble in participant order afterwards.
 	results := make([]*DebateTurn, len(participants))
@@ -63,7 +60,7 @@ func (a *App) answerWithDebate(ctx context.Context, chatID int64, userMessage, m
 			prompt := buildDebateTurnPrompt(userMessage, memoryContext, participant)
 			answer, err := participant.Runner.Agent.Ask(ctx, prompt)
 			if err != nil {
-				log.Printf("debate turn skipped agent=%s chat_id=%d: %v", participant.Runner.Name, chatID, err)
+				log.Printf("debate turn skipped agent=%s chat_id=%d: %s", participant.Runner.Name, chatID, safeError(err))
 				return
 			}
 			results[i] = &DebateTurn{
@@ -82,7 +79,6 @@ func (a *App) answerWithDebate(ctx context.Context, chatID int64, userMessage, m
 			continue
 		}
 		transcript = append(transcript, *turn)
-		a.sendDebateTurn(ctx, chatID, *turn, len(transcript), total)
 	}
 
 	if len(transcript) == 0 {
@@ -101,7 +97,6 @@ func (a *App) answerWithDebate(ctx context.Context, chatID int64, userMessage, m
 		Content:   strings.TrimSpace(review),
 	}
 	transcript = append(transcript, reviewTurn)
-	a.sendDebateTurn(ctx, chatID, reviewTurn, len(transcript), total)
 
 	finalPrompt := buildDebateSynthesisPrompt(userMessage, memoryContext, transcript)
 	final, err := synthesizer.Agent.Ask(ctx, finalPrompt)
@@ -115,23 +110,12 @@ func (a *App) answerWithDebate(ctx context.Context, chatID int64, userMessage, m
 		Content:   strings.TrimSpace(final),
 	}
 	transcript = append(transcript, synthesisTurn)
-	a.sendDebateTurn(ctx, chatID, synthesisTurn, len(transcript), total)
 
 	return DebateResult{
 		Final:       synthesisTurn.Content,
 		Synthesizer: synthesizer,
 		Transcript:  transcript,
 	}, nil
-}
-
-func (a *App) sendDebateTurn(ctx context.Context, chatID int64, turn DebateTurn, index, total int) {
-	if a.bot == nil {
-		return
-	}
-	message := fmt.Sprintf("[debate %d/%d · %s · %s]\n%s", index, total, turn.Stage, turn.AgentName, turn.Content)
-	if err := a.sendMessage(ctx, chatID, message, 0); err != nil {
-		log.Printf("send debate transcript failed chat_id=%d agent=%s: %v", chatID, turn.AgentName, err)
-	}
 }
 
 func buildDebateTurnPrompt(userMessage, memoryContext string, participant AgentParticipant) string {

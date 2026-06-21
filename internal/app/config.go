@@ -14,21 +14,22 @@ const (
 	BackendCodex  = "codex"
 	BackendOllama = "ollama"
 
-	defaultAgentName     = "default"
-	maxActiveJobsPerChat = 1
-	maxActiveJobsGlobal  = 4
-	maxQueuedJobsPerChat = 10
-	maxQueuedJobsGlobal  = 100
-	maxRequestsPerMinute = 10
-	jobHistoryLimit      = 20
-	jobProgressInterval  = 60 * time.Second
-	debateMaxAgents   = 4
-	debateMaxParallel = 4
-	streamPreviewMaxRunes = 1500
-	memoryMaxMessages = 20
-	memoryMaxChars       = 12000
-	memoryRefineMaxChars = 1000
-	memoryRefineTimeout  = 90 * time.Second
+	defaultAgentName        = "default"
+	maxActiveJobsPerChat    = 1
+	maxActiveJobsGlobal     = 4
+	maxQueuedJobsPerChat    = 10
+	maxQueuedJobsGlobal     = 100
+	maxRequestsPerMinute    = 10
+	jobHistoryLimit         = 20
+	jobProgressInterval     = 60 * time.Second
+	debateMaxAgents         = 4
+	debateMaxParallel       = 4
+	streamPreviewMaxRunes   = 1500
+	memoryMaxMessages       = 20
+	memoryMaxChars          = 12000
+	memoryRefineMaxChars    = 1000
+	memoryRefineTimeout     = 90 * time.Second
+	ollamaResponseBodyLimit = 16 << 20
 )
 
 // streamEditInterval throttles how often a streamed answer preview edits the
@@ -267,4 +268,3 @@ func parseInt64Set(raw, key string) (map[int64]struct{}, error) {
 	}
 	return ids, nil
 }
-

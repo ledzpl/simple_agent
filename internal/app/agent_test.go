@@ -81,49 +81,10 @@ printf 'fake answer\n' > "$out"
 	}
 }
 
-func TestCodexAgentAskStreamForwardsStdout(t *testing.T) {
-	dir := t.TempDir()
-	fakeCodex := filepath.Join(dir, "fake-codex")
-
-	// Print progress to stdout, then write the authoritative answer to the -o file.
-	script := `#!/bin/sh
-out=""
-while [ "$#" -gt 0 ]; do
-  if [ "$1" = "-o" ]; then
-    shift
-    out="$1"
-    break
-  fi
-  shift
-done
-cat > /dev/null
-printf 'working...\n'
-printf 'almost done\n'
-printf 'final answer\n' > "$out"
-`
-	if err := os.WriteFile(fakeCodex, []byte(script), 0700); err != nil {
-		t.Fatalf("write fake codex: %v", err)
-	}
-
-	agent := CodexAgent{cfg: Config{
-		CodexBin:     fakeCodex,
-		CodexWorkDir: dir,
-		CodexSandbox: "read-only",
-		AgentTimeout: time.Second,
-	}}
-
-	var preview strings.Builder
-	answer, err := agent.AskStream(context.Background(), "hi", func(d string) {
-		preview.WriteString(d)
-	})
-	if err != nil {
-		t.Fatalf("AskStream returned error: %v", err)
-	}
-	if answer != "final answer" {
-		t.Fatalf("answer mismatch: %q", answer)
-	}
-	if !strings.Contains(preview.String(), "working...") {
-		t.Fatalf("expected streamed stdout preview, got: %q", preview.String())
+func TestCodexAgentDoesNotExposeUnstructuredStdoutAsStreaming(t *testing.T) {
+	var agent Agent = CodexAgent{}
+	if _, ok := agent.(StreamingAgent); ok {
+		t.Fatal("Codex stdout is not a structured answer stream and must not be exposed as live Telegram output")
 	}
 }
 
@@ -257,6 +218,28 @@ func TestOllamaAgentAskStreamReportsAPIError(t *testing.T) {
 	_, err := agent.AskStream(context.Background(), "hello", nil)
 	if err == nil || !strings.Contains(err.Error(), "model not found") {
 		t.Fatalf("expected ollama error, got %v", err)
+	}
+}
+
+func TestOllamaAgentAskStreamRejectsTruncatedStream(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		_, _ = io.WriteString(w, `{"message":{"role":"assistant","content":"partial"}}`+"\n")
+	}))
+	defer server.Close()
+
+	agent := OllamaAgent{
+		cfg: Config{
+			AgentTimeout: time.Second,
+			OllamaURL:    server.URL,
+			OllamaModel:  "llama3.2",
+		},
+		client: server.Client(),
+	}
+
+	_, err := agent.AskStream(context.Background(), "hello", nil)
+	if err == nil || !strings.Contains(err.Error(), "ended before completion") {
+		t.Fatalf("expected truncated stream error, got %v", err)
 	}
 }
 

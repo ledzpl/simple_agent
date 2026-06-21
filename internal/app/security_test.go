@@ -35,6 +35,15 @@ func TestAuthorizeMessageChecksUserAndGroup(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "chat type") {
 		t.Fatalf("expected group restriction error, got %v", err)
 	}
+
+	app.cfg.AllowGroupChats = true
+	err = app.authorizeMessage(TelegramMessage{
+		Chat: TelegramChat{ID: 123, Type: "channel"},
+		From: &TelegramUser{ID: 7},
+	})
+	if err == nil || !strings.Contains(err.Error(), "chat type") {
+		t.Fatalf("unknown chat types must remain rejected, got %v", err)
+	}
 }
 
 func TestDangerousActionRequiresConfirmation(t *testing.T) {

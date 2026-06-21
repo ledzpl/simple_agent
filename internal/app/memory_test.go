@@ -54,6 +54,10 @@ func TestMemoryStoreAppendBuildContextAndClear(t *testing.T) {
 }
 
 func TestLimitMessages(t *testing.T) {
+	if limited := limitMessages(nil, 10, 10); limited != nil {
+		t.Fatalf("empty memory should remain empty, got %#v", limited)
+	}
+
 	messages := []MemoryMessage{
 		{Role: RoleUser, Content: "one"},
 		{Role: RoleAssistant, Content: "two"},
@@ -69,6 +73,11 @@ func TestLimitMessages(t *testing.T) {
 	limited = limitMessages(messages, 10, 9)
 	if len(limited) != 2 || limited[0].Content != "three" || limited[1].Content != "four" {
 		t.Fatalf("max chars limit failed: %#v", limited)
+	}
+
+	limited = limitMessages([]MemoryMessage{{Role: RoleAssistant, Content: "0123456789"}}, 10, 4)
+	if len(limited) != 1 || limited[0].Content != "0123" {
+		t.Fatalf("oversized latest memory should be truncated, got %#v", limited)
 	}
 }
 
@@ -106,6 +115,13 @@ func TestSelectRelevantMessagesPrefersQueryMatchesAndRecentFallback(t *testing.T
 		if message.Content == messages[1].Content || message.Content == messages[2].Content {
 			t.Fatalf("irrelevant older memory should be excluded, got %#v", selected)
 		}
+	}
+
+	selected = selectRelevantMessages([]MemoryMessage{
+		{Role: RoleMemory, Content: "Go " + strings.Repeat("x", 100)},
+	}, "Go", 4, 10)
+	if len(selected) != 1 || len([]rune(selected[0].Content)) != 10 {
+		t.Fatalf("oversized relevant memory should be truncated, got %#v", selected)
 	}
 }
 

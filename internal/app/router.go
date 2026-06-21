@@ -231,11 +231,6 @@ func (r *AgentRouter) Runners() []AgentRunner {
 	return out
 }
 
-func routeScore(lowerMessage string, runner AgentRunner) (int, string) {
-	evaluation := evaluateRoute(lowerMessage, runner)
-	return evaluation.Score, evaluation.Reason
-}
-
 func evaluateRoute(lowerMessage string, runner AgentRunner) routeEvaluation {
 	match := matchEvaluation(lowerMessage, runner.Match)
 	if match.Blocked {
@@ -250,11 +245,6 @@ func evaluateRoute(lowerMessage string, runner AgentRunner) routeEvaluation {
 		reason = match.Reason + "; " + exampleReason
 	}
 	return routeEvaluation{Score: match.Score + exampleScore, Reason: reason}
-}
-
-func matchScore(lowerMessage string, matches []string) (int, string) {
-	evaluation := matchEvaluation(lowerMessage, matches)
-	return evaluation.Score, evaluation.Reason
 }
 
 func matchEvaluation(lowerMessage string, matches []string) routeEvaluation {

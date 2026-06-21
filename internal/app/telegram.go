@@ -13,7 +13,10 @@ import (
 	"time"
 )
 
-const telegramMessageLimit = 4096
+const (
+	telegramMessageLimit      = 4096
+	telegramResponseBodyLimit = 8 << 20
+)
 
 type TelegramBot struct {
 	baseURL string
@@ -112,13 +115,13 @@ func (b *TelegramBot) GetUpdates(ctx context.Context, offset int64) ([]TelegramU
 
 	resp, err := b.client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, telegramRequestError("getUpdates", err)
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := readLimitedBody(resp.Body, telegramResponseBodyLimit)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read telegram getUpdates response: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("telegram getUpdates status %d: %s", resp.StatusCode, trimBody(body))
@@ -142,18 +145,13 @@ func (b *TelegramBot) SendMessage(ctx context.Context, chatID int64, text string
 func (b *TelegramBot) SendMessageWithOptions(ctx context.Context, chatID int64, text string, replyTo int64, options SendMessageOptions) ([]TelegramMessage, error) {
 	chunks := splitTelegramText(text)
 	sent := make([]TelegramMessage, 0, len(chunks))
-	originalReplyTo := replyTo
 	for i, chunk := range chunks {
 		payload := map[string]any{
 			"chat_id": chatID,
 			"text":    chunk,
 		}
-		if replyTo > 0 || (options.ReplyMarkup != nil && i == len(chunks)-1 && originalReplyTo > 0) {
-			messageID := replyTo
-			if messageID == 0 {
-				messageID = originalReplyTo
-			}
-			payload["reply_parameters"] = map[string]any{"message_id": messageID}
+		if replyTo > 0 {
+			payload["reply_parameters"] = map[string]any{"message_id": replyTo}
 		}
 		if options.ReplyMarkup != nil && i == len(chunks)-1 {
 			payload["reply_markup"] = options.ReplyMarkup
@@ -243,13 +241,13 @@ func (b *TelegramBot) postJSONDecode(ctx context.Context, path string, payload m
 
 	resp, err := b.client.Do(req)
 	if err != nil {
-		return err
+		return telegramRequestError(strings.TrimPrefix(path, "/"), err)
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := readLimitedBody(resp.Body, telegramResponseBodyLimit)
 	if err != nil {
-		return err
+		return fmt.Errorf("read telegram %s response: %w", strings.TrimPrefix(path, "/"), err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("telegram %s status %d: %s", strings.TrimPrefix(path, "/"), resp.StatusCode, trimBody(body))
@@ -285,8 +283,23 @@ func splitTelegramText(text string) []string {
 
 func trimBody(body []byte) string {
 	text := strings.TrimSpace(string(body))
-	if len(text) > 1000 {
-		return text[:1000] + "..."
+	return truncate(text, 1000)
+}
+
+func readLimitedBody(body io.Reader, limit int64) ([]byte, error) {
+	if limit <= 0 {
+		return nil, fmt.Errorf("response body limit must be positive")
 	}
-	return text
+	data, err := io.ReadAll(io.LimitReader(body, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("response body exceeds %d bytes", limit)
+	}
+	return data, nil
+}
+
+func telegramRequestError(operation string, err error) error {
+	return fmt.Errorf("telegram %s request failed: %s", operation, redactSecrets(err.Error()))
 }

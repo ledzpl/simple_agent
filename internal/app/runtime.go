@@ -56,7 +56,7 @@ func Run(args []string) error {
 		log.Printf("memory disabled")
 	}
 	if len(cfg.AllowedChatIDs) == 0 {
-		log.Printf("TELEGRAM_ALLOWED_CHAT_IDS is empty; only /id and /start will be answered")
+		log.Printf("TELEGRAM_ALLOWED_CHAT_IDS is empty; agent execution and protected commands are disabled")
 	}
 
 	if err := app.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {

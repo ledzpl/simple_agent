@@ -132,7 +132,7 @@ func (a *App) isChatTypeAllowed(chat TelegramChat) bool {
 	case "group", "supergroup":
 		return a.cfg.AllowGroupChats
 	default:
-		return a.cfg.AllowGroupChats
+		return false
 	}
 }
 
@@ -178,7 +178,7 @@ var secretPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\b[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}\b`),
 	regexp.MustCompile(`\b01[016789][-\s]?\d{3,4}[-\s]?\d{4}\b`),
 	regexp.MustCompile(`(?:\+1[-.\s]?)?(?:\(\d{3}\)[-.\s]?|\b\d{3}[-.\s])\d{3}[-.\s]?\d{4}\b`),
-	regexp.MustCompile(`\b\d{6,}:[A-Za-z0-9_-]{20,}\b`),
+	regexp.MustCompile(`\d{6,}:[A-Za-z0-9_-]{20,}`),
 	regexp.MustCompile(`\bsk-[A-Za-z0-9_-]{20,}\b`),
 	regexp.MustCompile(`(?i)\b(?:aws_access_key_id|aws_secret_access_key|api[_-]?key|token|password)\s*[:=]\s*['"]?[^'"\s]+`),
 }
@@ -196,4 +196,11 @@ func redactSecrets(text string) string {
 		})
 	}
 	return text
+}
+
+func safeError(err error) string {
+	if err == nil {
+		return ""
+	}
+	return redactSecrets(err.Error())
 }

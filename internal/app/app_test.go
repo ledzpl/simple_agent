@@ -62,14 +62,14 @@ func TestAskWithLiveProgressStreamsPreview(t *testing.T) {
 
 	bot := &TelegramBot{baseURL: server.URL, client: server.Client()}
 	app := NewApp(Config{}, bot, &fakeAgent{}, nil)
-	agent := &slowStreamingAgent{deltas: []string{"Hel", "lo", " world"}, gap: 15 * time.Millisecond}
+	agent := &slowStreamingAgent{deltas: []string{"Hel", "lo", " token=abc123"}, gap: 15 * time.Millisecond}
 	job := &AgentJob{ID: "j1", ChatID: 1}
 
 	answer, err := app.askWithLiveProgress(context.Background(), job, 99, agent, "hi")
 	if err != nil {
 		t.Fatalf("askWithLiveProgress returned error: %v", err)
 	}
-	if answer != "Hello world" {
+	if answer != "Hello token=abc123" {
 		t.Fatalf("answer mismatch: %q", answer)
 	}
 
@@ -82,6 +82,9 @@ func TestAskWithLiveProgressStreamsPreview(t *testing.T) {
 	for _, edit := range edits {
 		if strings.Contains(edit, "Hel") {
 			sawPreview = true
+		}
+		if strings.Contains(edit, "abc123") {
+			t.Fatalf("streamed preview leaked a secret: %q", edit)
 		}
 	}
 	if !sawPreview {
@@ -245,6 +248,24 @@ func TestAnswerActionsUsesMemoryID(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("answer actions missing memory-specific delete callback: %#v", markup)
+	}
+}
+
+func TestAnswerActionsRedactsStoredDebateTranscript(t *testing.T) {
+	app := NewApp(Config{}, nil, &fakeAgent{}, nil)
+	markup := app.answerActions("", []DebateTurn{{
+		Stage:     "analysis",
+		AgentName: "reviewer",
+		Content:   "token=abc123",
+	}})
+	if markup == nil || len(markup.InlineKeyboard) != 2 {
+		t.Fatalf("expected debate action row, got %#v", markup)
+	}
+	callback := markup.InlineKeyboard[1][0].CallbackData
+	id := strings.TrimPrefix(callback, "debate_show:")
+	transcript := app.loadDebateTranscript(id)
+	if strings.Contains(transcript, "abc123") || !strings.Contains(transcript, "[redacted-secret]") {
+		t.Fatalf("stored transcript was not redacted: %q", transcript)
 	}
 }
 

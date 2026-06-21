@@ -3,11 +3,18 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
 
 func TestSplitTelegramText(t *testing.T) {
 	long := make([]rune, telegramMessageLimit+20)
@@ -135,6 +142,59 @@ func TestTelegramBotSendMessageWithOptions(t *testing.T) {
 	keyboard, ok := markup["inline_keyboard"].([]any)
 	if !ok || len(keyboard) != 1 {
 		t.Fatalf("inline_keyboard mismatch: %#v", markup["inline_keyboard"])
+	}
+}
+
+func TestTelegramBotRepliesOnlyOnFirstChunk(t *testing.T) {
+	var payloads []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode payload: %v", err)
+		}
+		payloads = append(payloads, payload)
+		_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":99,"chat":{"id":123}}}`))
+	}))
+	defer server.Close()
+
+	bot := &TelegramBot{baseURL: server.URL, client: server.Client()}
+	_, err := bot.SendMessageWithOptions(context.Background(), 123, strings.Repeat("가", telegramMessageLimit+1), 7, SendMessageOptions{
+		ReplyMarkup: &InlineKeyboardMarkup{InlineKeyboard: [][]InlineKeyboardButton{{{
+			Text: "retry", CallbackData: "retry",
+		}}}},
+	})
+	if err != nil {
+		t.Fatalf("SendMessageWithOptions returned error: %v", err)
+	}
+	if len(payloads) != 2 {
+		t.Fatalf("expected two chunks, got %d", len(payloads))
+	}
+	if _, ok := payloads[0]["reply_parameters"]; !ok {
+		t.Fatalf("first chunk must reply to the user message: %#v", payloads[0])
+	}
+	if _, ok := payloads[1]["reply_parameters"]; ok {
+		t.Fatalf("last chunk must not duplicate the reply reference: %#v", payloads[1])
+	}
+	if _, ok := payloads[1]["reply_markup"]; !ok {
+		t.Fatalf("last chunk must carry the inline keyboard: %#v", payloads[1])
+	}
+}
+
+func TestTelegramRequestErrorRedactsBotToken(t *testing.T) {
+	const token = "123456789:abcdefghijklmnopqrstuvwxyzABCDE"
+	bot := &TelegramBot{
+		baseURL: "https://api.telegram.org/bot" + token,
+		client: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return nil, fmt.Errorf("dial %s failed", req.URL)
+		})},
+	}
+
+	_, err := bot.GetUpdates(context.Background(), 0)
+	if err == nil {
+		t.Fatal("expected request error")
+	}
+	if strings.Contains(err.Error(), token) || !strings.Contains(err.Error(), "[redacted-secret]") {
+		t.Fatalf("request error leaked bot token: %v", err)
 	}
 }
 

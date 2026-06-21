@@ -5,6 +5,9 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+User=telegram-local-agent
+Group=telegram-local-agent
+UMask=0077
 WorkingDirectory=/opt/telegram-local-agent
 EnvironmentFile=/etc/telegram-local-agent.env
 ExecStart=/usr/local/bin/telegram-local-agent
@@ -12,8 +15,12 @@ Restart=on-failure
 RestartSec=5s
 NoNewPrivileges=true
 PrivateTmp=true
+PrivateDevices=true
 ProtectSystem=strict
 ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
 ReadWritePaths=/opt/telegram-local-agent/.telegram-memory /opt/telegram-local-agent/.telegram-state
 
 [Install]

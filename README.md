@@ -60,7 +60,7 @@ Queue limits, progress cadence, state location, debate size, memory window, answ
 
 - Jobs: one active job per chat, four active jobs globally, 10 queued jobs per chat, 100 queued jobs globally, and 10 accepted requests per minute per chat.
 - Job history: 20 entries per chat, 60-second progress updates, state in `.telegram-state` or `STATE_DIR`.
-- Debate: up to four independent role analyses, one moderator review, final synthesis, transcript messages enabled.
+- Debate: up to four independent role analyses, one moderator review, final synthesis, and an on-demand redacted transcript.
 - Memory: up to 20 relevant/recent notes, 12,000 context characters, 1,000-character refined notes, 90-second refinement timeout.
 - Telegram: plain-text responses, answer buttons enabled, dangerous-action confirmation required.
 
@@ -119,6 +119,8 @@ When `DEBATE_ENABLED=true`, normal user messages are handled as a short discussi
 4. The moderator applies those corrections and writes the final answer.
 
 Use `/agent <name> <message>` for a single-agent answer, bypassing debate. Use `/debate <message>` to force debate even when `DEBATE_ENABLED=false`. Keeping `DEBATE_ENABLED=false` is usually better for Codex because each debate turn starts another backend call.
+
+Intermediate analyses are not sent as separate chat messages. The final answer includes a “토론 보기” button that exposes a redacted transcript only when requested.
 
 ## Memory
 
@@ -184,7 +186,7 @@ OLLAMA_MODEL=llama3.2
 - The next Telegram update offset is persisted after each handled update, so restarts continue from the last consumed update.
 - Recent terminal job history is persisted and remains visible through `/status` and `/retry` after restart. Running and queued jobs are not resumed.
 - A running job uses one editable progress message instead of sending repeated progress messages.
-- For a single-agent answer, the progress message shows a live preview of the response as the backend produces it (throttled to one edit every two seconds). Ollama streams generated tokens; Codex streams its working output as an unparsed preview while the authoritative answer still comes from its final-message file. Debate mode and backends without streaming fall back to periodic elapsed-time progress updates.
+- For an Ollama single-agent answer, the progress message shows a redacted live preview of generated tokens, throttled to one edit every two seconds. Codex stdout is intentionally not exposed because it is unstructured operational output; Codex, debate mode, and backends without structured streaming use periodic elapsed-time progress updates.
 - Queue and progress messages include a cancel button; completed, failed, and canceled progress messages include a retry button.
 - Successful user/assistant exchanges are stored as redacted raw turns for exact short-term continuity, optionally distilled into compact durable notes, and included as context on later requests.
 - Agent answers include inline buttons for “다시 생성”, “기억 삭제”, and debate transcript viewing.
@@ -237,6 +239,8 @@ Operational samples are in `deploy/`:
 
 - `deploy/telegram-local-agent.service`: systemd service with restricted filesystem access.
 - `deploy/com.example.telegram-local-agent.plist`: launchd plist for macOS.
+
+The systemd sample expects a dedicated `telegram-local-agent` user/group and pre-created writable `.telegram-memory` and `.telegram-state` directories owned by that account. Do not run this service as root.
 
 Source layout:
 
