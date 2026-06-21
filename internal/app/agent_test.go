@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -80,6 +81,52 @@ printf 'fake answer\n' > "$out"
 	}
 }
 
+func TestCodexAgentAskStreamForwardsStdout(t *testing.T) {
+	dir := t.TempDir()
+	fakeCodex := filepath.Join(dir, "fake-codex")
+
+	// Print progress to stdout, then write the authoritative answer to the -o file.
+	script := `#!/bin/sh
+out=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-o" ]; then
+    shift
+    out="$1"
+    break
+  fi
+  shift
+done
+cat > /dev/null
+printf 'working...\n'
+printf 'almost done\n'
+printf 'final answer\n' > "$out"
+`
+	if err := os.WriteFile(fakeCodex, []byte(script), 0700); err != nil {
+		t.Fatalf("write fake codex: %v", err)
+	}
+
+	agent := CodexAgent{cfg: Config{
+		CodexBin:     fakeCodex,
+		CodexWorkDir: dir,
+		CodexSandbox: "read-only",
+		AgentTimeout: time.Second,
+	}}
+
+	var preview strings.Builder
+	answer, err := agent.AskStream(context.Background(), "hi", func(d string) {
+		preview.WriteString(d)
+	})
+	if err != nil {
+		t.Fatalf("AskStream returned error: %v", err)
+	}
+	if answer != "final answer" {
+		t.Fatalf("answer mismatch: %q", answer)
+	}
+	if !strings.Contains(preview.String(), "working...") {
+		t.Fatalf("expected streamed stdout preview, got: %q", preview.String())
+	}
+}
+
 func indexOf(values []string, target string) int {
 	for i, value := range values {
 		if value == target {
@@ -142,6 +189,74 @@ func TestOllamaAgentAsk(t *testing.T) {
 	}
 	if request.Messages[1].Role != "user" || request.Messages[1].Content != "hello" {
 		t.Fatalf("user message mismatch: %#v", request.Messages[1])
+	}
+}
+
+func TestOllamaAgentAskStream(t *testing.T) {
+	var request ollamaChatRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/chat" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		_, _ = io.WriteString(w, `{"message":{"role":"assistant","content":"Hel"}}`+"\n")
+		_, _ = io.WriteString(w, `{"message":{"role":"assistant","content":"lo"},"done":true}`+"\n")
+	}))
+	defer server.Close()
+
+	agent := OllamaAgent{
+		cfg: Config{
+			AgentTimeout:      time.Second,
+			AgentSystemPrompt: "system prompt",
+			OllamaURL:         server.URL,
+			OllamaModel:       "llama3.2",
+		},
+		client: server.Client(),
+	}
+
+	var deltas []string
+	answer, err := agent.AskStream(context.Background(), "hello", func(d string) {
+		deltas = append(deltas, d)
+	})
+	if err != nil {
+		t.Fatalf("AskStream returned error: %v", err)
+	}
+	if answer != "Hello" {
+		t.Fatalf("answer mismatch: %q", answer)
+	}
+	if !request.Stream {
+		t.Fatal("expected stream=true for AskStream")
+	}
+	if strings.Join(deltas, "") != "Hello" {
+		t.Fatalf("delta sequence mismatch: %#v", deltas)
+	}
+	if len(deltas) != 2 {
+		t.Fatalf("expected two streamed chunks, got %d: %#v", len(deltas), deltas)
+	}
+}
+
+func TestOllamaAgentAskStreamReportsAPIError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		_, _ = io.WriteString(w, `{"error":"model not found"}`+"\n")
+	}))
+	defer server.Close()
+
+	agent := OllamaAgent{
+		cfg: Config{
+			AgentTimeout: time.Second,
+			OllamaURL:    server.URL,
+			OllamaModel:  "missing",
+		},
+		client: server.Client(),
+	}
+
+	_, err := agent.AskStream(context.Background(), "hello", nil)
+	if err == nil || !strings.Contains(err.Error(), "model not found") {
+		t.Fatalf("expected ollama error, got %v", err)
 	}
 }
 

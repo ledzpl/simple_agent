@@ -23,11 +23,17 @@ const (
 	jobHistoryLimit      = 20
 	jobProgressInterval  = 60 * time.Second
 	debateMaxAgents   = 4
+	debateMaxParallel = 4
+	streamPreviewMaxRunes = 1500
 	memoryMaxMessages = 20
 	memoryMaxChars       = 12000
 	memoryRefineMaxChars = 1000
 	memoryRefineTimeout  = 90 * time.Second
 )
+
+// streamEditInterval throttles how often a streamed answer preview edits the
+// Telegram progress message. It is a var so tests can shorten it.
+var streamEditInterval = 2 * time.Second
 
 type Config struct {
 	TelegramToken     string

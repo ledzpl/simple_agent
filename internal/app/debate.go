@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 )
 
 type DebateTurn struct {
@@ -47,22 +48,41 @@ func (a *App) answerWithDebate(ctx context.Context, chatID int64, userMessage, m
 	// analyses + review + synthesis
 	total := len(participants) + 2
 
+	// The analyses are independent by design (no agent sees another's output),
+	// so run them concurrently and reassemble in participant order afterwards.
+	results := make([]*DebateTurn, len(participants))
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, debateMaxParallel)
+	for i, participant := range participants {
+		wg.Add(1)
+		go func(i int, participant AgentParticipant) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			prompt := buildDebateTurnPrompt(userMessage, memoryContext, participant)
+			answer, err := participant.Runner.Agent.Ask(ctx, prompt)
+			if err != nil {
+				log.Printf("debate turn skipped agent=%s chat_id=%d: %v", participant.Runner.Name, chatID, err)
+				return
+			}
+			results[i] = &DebateTurn{
+				Stage:     "analysis",
+				AgentName: participant.Runner.Name,
+				Backend:   participant.Runner.Backend,
+				Content:   strings.TrimSpace(answer),
+			}
+		}(i, participant)
+	}
+	wg.Wait()
+
 	var transcript []DebateTurn
-	for _, participant := range participants {
-		prompt := buildDebateTurnPrompt(userMessage, memoryContext, participant)
-		answer, err := participant.Runner.Agent.Ask(ctx, prompt)
-		if err != nil {
-			log.Printf("debate turn skipped agent=%s chat_id=%d: %v", participant.Runner.Name, chatID, err)
+	for _, turn := range results {
+		if turn == nil {
 			continue
 		}
-		turn := DebateTurn{
-			Stage:     "analysis",
-			AgentName: participant.Runner.Name,
-			Backend:   participant.Runner.Backend,
-			Content:   strings.TrimSpace(answer),
-		}
-		transcript = append(transcript, turn)
-		a.sendDebateTurn(ctx, chatID, turn, len(transcript), total)
+		transcript = append(transcript, *turn)
+		a.sendDebateTurn(ctx, chatID, *turn, len(transcript), total)
 	}
 
 	if len(transcript) == 0 {

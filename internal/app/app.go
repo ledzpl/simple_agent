@@ -244,14 +244,22 @@ func (a *App) executeJob(ctx context.Context, job *AgentJob) {
 	}
 	prompt := promptWithMemory(memoryContext, route.Message)
 
+	debate := a.shouldDebate(route, job.ForceDebate)
+	streamer, canStream := route.Runner.Agent.(StreamingAgent)
+	// When streaming, the stream pump owns the progress message, so the periodic
+	// progress updater must not edit the same message concurrently.
+	liveStream := canStream && !debate && a.bot != nil && progressID > 0
+
 	done := make(chan struct{})
 	go a.keepTyping(ctx, job.ChatID, done)
-	go a.keepJobProgress(ctx, job, progressID, done)
+	if !liveStream {
+		go a.keepJobProgress(ctx, job, progressID, done)
+	}
 
 	answerAgent := route.Runner
 	answer := ""
 	var transcript []DebateTurn
-	if a.shouldDebate(route, job.ForceDebate) {
+	if debate {
 		result, err := a.answerWithDebate(ctx, job.ChatID, route.Message, memoryContext)
 		close(done)
 		if err != nil {
@@ -262,6 +270,15 @@ func (a *App) executeJob(ctx context.Context, job *AgentJob) {
 		answer = result.Final
 		answerAgent = result.Synthesizer
 		transcript = result.Transcript
+	} else if liveStream {
+		var err error
+		answer, err = a.askWithLiveProgress(ctx, job, progressID, streamer, prompt)
+		close(done)
+		if err != nil {
+			log.Printf("agent failed job=%s chat_id=%d agent=%s: %v", job.ID, job.ChatID, route.Runner.Name, err)
+			a.finishJobError(ctx, job, route.Runner.Name, "로컬 에이전트 실행에 실패했습니다.", err)
+			return
+		}
 	} else {
 		var err error
 		answer, err = route.Runner.Agent.Ask(ctx, prompt)
@@ -582,6 +599,64 @@ func (a *App) keepJobProgress(ctx context.Context, job *AgentJob, progressID int
 			timer.Reset(interval)
 		}
 	}
+}
+
+// askWithLiveProgress runs a streaming agent and edits the job progress message
+// with a throttled preview of the answer as it is produced.
+func (a *App) askWithLiveProgress(ctx context.Context, job *AgentJob, progressID int64, agent StreamingAgent, prompt string) (string, error) {
+	var (
+		mu    sync.Mutex
+		buf   strings.Builder
+		dirty bool
+	)
+	streamDone := make(chan struct{})
+
+	go func() {
+		ticker := time.NewTicker(streamEditInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-streamDone:
+				return
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				mu.Lock()
+				if !dirty {
+					mu.Unlock()
+					continue
+				}
+				preview := streamPreview(buf.String())
+				dirty = false
+				mu.Unlock()
+				if preview == "" {
+					continue
+				}
+				a.updateJobProgress(ctx, job, progressID, formatJobProgress(job, "답변 생성 중입니다.", preview), jobRunningActions(job.ID))
+			}
+		}
+	}()
+
+	answer, err := agent.AskStream(ctx, prompt, func(delta string) {
+		mu.Lock()
+		buf.WriteString(delta)
+		dirty = true
+		mu.Unlock()
+	})
+	close(streamDone)
+	return answer, err
+}
+
+func streamPreview(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	runes := []rune(text)
+	if len(runes) > streamPreviewMaxRunes {
+		text = "…" + string(runes[len(runes)-streamPreviewMaxRunes:])
+	}
+	return text
 }
 
 func (a *App) finishJobError(ctx context.Context, job *AgentJob, agentName, prefix string, err error) {

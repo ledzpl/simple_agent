@@ -84,6 +84,83 @@ func TestAnswerWithDebate(t *testing.T) {
 	}
 }
 
+// barrierAgent blocks in Ask until released, so a test can assert that several
+// analyses are in flight at the same time.
+type barrierAgent struct {
+	answer  string
+	started chan struct{}
+	release chan struct{}
+}
+
+func (a *barrierAgent) Ask(ctx context.Context, prompt string) (string, error) {
+	a.started <- struct{}{}
+	select {
+	case <-a.release:
+		return a.answer, nil
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+}
+
+func TestAnswerWithDebateRunsAnalysesConcurrently(t *testing.T) {
+	started := make(chan struct{}, 3)
+	release := make(chan struct{})
+	general := &sequenceAgent{answers: []string{"review notes", "final answer"}}
+	router := &AgentRouter{
+		defaultIndex: 0,
+		runners: []AgentRunner{
+			{Name: "general", Match: []string{"*"}, Backend: BackendCodex, Agent: general},
+			{Name: "one", Match: []string{"코드"}, Backend: BackendCodex, Agent: &barrierAgent{answer: "one view", started: started, release: release}},
+			{Name: "two", Match: []string{"검토"}, Backend: BackendCodex, Agent: &barrierAgent{answer: "two view", started: started, release: release}},
+			{Name: "three", Match: []string{"성능"}, Backend: BackendCodex, Agent: &barrierAgent{answer: "three view", started: started, release: release}},
+		},
+	}
+	app := NewAppWithRouter(Config{AgentTimeout: time.Second}, nil, router, nil)
+
+	type outcome struct {
+		result DebateResult
+		err    error
+	}
+	ch := make(chan outcome, 1)
+	go func() {
+		result, err := app.answerWithDebate(context.Background(), 1, "코드 검토 성능", "")
+		ch <- outcome{result, err}
+	}()
+
+	// All three analysts must reach Ask before any is released. If analyses ran
+	// sequentially this would block after the first start and time out.
+	deadline := time.After(2 * time.Second)
+	for i := 0; i < 3; i++ {
+		select {
+		case <-started:
+		case <-deadline:
+			t.Fatalf("only %d/3 analysts started concurrently; analyses are not parallel", i)
+		}
+	}
+	close(release)
+
+	select {
+	case out := <-ch:
+		if out.err != nil {
+			t.Fatalf("answerWithDebate returned error: %v", out.err)
+		}
+		if out.result.Final != "final answer" {
+			t.Fatalf("final answer mismatch: %q", out.result.Final)
+		}
+		// 3 analyses + review + synthesis, preserved in participant order.
+		if len(out.result.Transcript) != 5 {
+			t.Fatalf("expected 5 turns, got %d: %#v", len(out.result.Transcript), out.result.Transcript)
+		}
+		for i, want := range []string{"one", "two", "three"} {
+			if out.result.Transcript[i].AgentName != want {
+				t.Fatalf("analysis %d = %q, want %q", i, out.result.Transcript[i].AgentName, want)
+			}
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("answerWithDebate did not complete after release")
+	}
+}
+
 func TestAnswerWithDebatePartialFailure(t *testing.T) {
 	general := &sequenceAgent{answers: []string{"review notes", "final answer"}}
 	coder := &sequenceAgent{answers: []string{"coder view"}}

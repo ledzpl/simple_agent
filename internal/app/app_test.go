@@ -2,7 +2,9 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,6 +12,82 @@ import (
 	"testing"
 	"time"
 )
+
+// slowStreamingAgent emits its deltas with a delay so streaming-progress edits
+// have time to fire during a test.
+type slowStreamingAgent struct {
+	deltas []string
+	gap    time.Duration
+}
+
+func (a *slowStreamingAgent) Ask(ctx context.Context, prompt string) (string, error) {
+	return a.AskStream(ctx, prompt, nil)
+}
+
+func (a *slowStreamingAgent) AskStream(ctx context.Context, prompt string, onDelta func(string)) (string, error) {
+	var b strings.Builder
+	for _, delta := range a.deltas {
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(a.gap):
+		}
+		b.WriteString(delta)
+		if onDelta != nil {
+			onDelta(delta)
+		}
+	}
+	return b.String(), nil
+}
+
+func TestAskWithLiveProgressStreamsPreview(t *testing.T) {
+	old := streamEditInterval
+	streamEditInterval = 10 * time.Millisecond
+	defer func() { streamEditInterval = old }()
+
+	var mu sync.Mutex
+	var edits []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/editMessageText" {
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			mu.Lock()
+			edits = append(edits, fmt.Sprint(body["text"]))
+			mu.Unlock()
+		}
+		_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":1,"chat":{"id":1}}}`))
+	}))
+	defer server.Close()
+
+	bot := &TelegramBot{baseURL: server.URL, client: server.Client()}
+	app := NewApp(Config{}, bot, &fakeAgent{}, nil)
+	agent := &slowStreamingAgent{deltas: []string{"Hel", "lo", " world"}, gap: 15 * time.Millisecond}
+	job := &AgentJob{ID: "j1", ChatID: 1}
+
+	answer, err := app.askWithLiveProgress(context.Background(), job, 99, agent, "hi")
+	if err != nil {
+		t.Fatalf("askWithLiveProgress returned error: %v", err)
+	}
+	if answer != "Hello world" {
+		t.Fatalf("answer mismatch: %q", answer)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(edits) == 0 {
+		t.Fatal("expected at least one streamed preview edit")
+	}
+	var sawPreview bool
+	for _, edit := range edits {
+		if strings.Contains(edit, "Hel") {
+			sawPreview = true
+		}
+	}
+	if !sawPreview {
+		t.Fatalf("preview edits never contained streamed text: %#v", edits)
+	}
+}
 
 type fakeAgent struct {
 	answer  string

@@ -114,7 +114,7 @@ Routing:
 When `DEBATE_ENABLED=true`, normal user messages are handled as a short discussion:
 
 1. The router selects up to four matched role agents from `agents.json` and includes the default moderator when there is room.
-2. Each selected agent produces an independent analysis without seeing earlier agents, reducing anchoring and repetition.
+2. Each selected agent produces an independent analysis without seeing earlier agents, reducing anchoring and repetition. These analyses run concurrently (up to four at once) and are reassembled in selection order, so total debate latency is closer to the slowest single analysis than to their sum.
 3. The default moderator audits the analyses for contradictions, unsupported claims, missing constraints, and safety issues.
 4. The moderator applies those corrections and writes the final answer.
 
@@ -184,6 +184,7 @@ OLLAMA_MODEL=llama3.2
 - The next Telegram update offset is persisted after each handled update, so restarts continue from the last consumed update.
 - Recent terminal job history is persisted and remains visible through `/status` and `/retry` after restart. Running and queued jobs are not resumed.
 - A running job uses one editable progress message instead of sending repeated progress messages.
+- For a single-agent answer, the progress message shows a live preview of the response as the backend produces it (throttled to one edit every two seconds). Ollama streams generated tokens; Codex streams its working output as an unparsed preview while the authoritative answer still comes from its final-message file. Debate mode and backends without streaming fall back to periodic elapsed-time progress updates.
 - Queue and progress messages include a cancel button; completed, failed, and canceled progress messages include a retry button.
 - Successful user/assistant exchanges are stored as redacted raw turns for exact short-term continuity, optionally distilled into compact durable notes, and included as context on later requests.
 - Agent answers include inline buttons for “다시 생성”, “기억 삭제”, and debate transcript viewing.
